@@ -99,7 +99,7 @@ async function main() {
     concatManager.startTimeoutChecker();
 
     // 启动API服务器
-    const apiServer = new APIServer(config, modem, smsProcessor);
+    const apiServer = new APIServer(config, modem, smsProcessor, pushManager);
     apiServer.start();
 
     logger.info('========================================');

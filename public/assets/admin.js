@@ -1,8 +1,26 @@
 const state = {
-  busy: false
+  busy: false,
+  pushChannels: [],
+  selectedPushChannel: -1,
+  pushLoaded: false
 };
 
 const elements = {
+  pushSettingsButton: document.querySelector('#pushSettingsButton'),
+  pushModal: document.querySelector('#pushModal'),
+  pushModalClose: document.querySelector('#pushModalClose'),
+  pushAddButton: document.querySelector('#pushAddButton'),
+  pushDeleteButton: document.querySelector('#pushDeleteButton'),
+  pushSaveButton: document.querySelector('#pushSaveButton'),
+  pushTestButton: document.querySelector('#pushTestButton'),
+  pushChannelList: document.querySelector('#pushChannelList'),
+  pushChannelForm: document.querySelector('#pushChannelForm'),
+  pushFormFields: document.querySelector('#pushFormFields'),
+  pushStatus: document.querySelector('#pushStatus'),
+  pushUrlLabel: document.querySelector('#pushUrlLabel'),
+  pushSecretLabel: document.querySelector('#pushSecretLabel'),
+  pushKey1Label: document.querySelector('#pushKey1Label'),
+  pushKey2Label: document.querySelector('#pushKey2Label'),
   refreshButton: document.querySelector('#refreshButton'),
   logsButton: document.querySelector('#logsButton'),
   readyBadge: document.querySelector('#readyBadge'),
@@ -27,6 +45,60 @@ const elements = {
   atOutput: document.querySelector('#atOutput'),
   consoleState: document.querySelector('#consoleState'),
   logWindow: document.querySelector('#logWindow')
+};
+
+const PUSH_TYPE_OPTIONS = {
+  dingtalk: '钉钉机器人',
+  feishu: '飞书机器人',
+  telegram: 'Telegram Bot',
+  pushplus: 'PushPlus',
+  serverchan: 'Server酱',
+  post_json: 'POST JSON',
+  bark: 'Bark',
+  get: 'GET',
+  custom: '自定义 POST'
+};
+
+const PUSH_TYPE_META = {
+  dingtalk: {
+    urlLabel: '钉钉 Webhook URL',
+    secretLabel: '加签密钥',
+    show: ['url', 'secret']
+  },
+  feishu: {
+    urlLabel: '飞书 Webhook URL',
+    secretLabel: '加签密钥',
+    show: ['url', 'secret']
+  },
+  telegram: {
+    urlLabel: 'Bot Token',
+    key1Label: 'Chat ID',
+    show: ['url', 'key1']
+  },
+  pushplus: {
+    key1Label: 'PushPlus Token',
+    show: ['key1']
+  },
+  serverchan: {
+    key1Label: 'Server酱 SendKey',
+    show: ['key1']
+  },
+  post_json: {
+    urlLabel: 'POST URL',
+    show: ['url']
+  },
+  bark: {
+    urlLabel: 'Bark 推送 URL',
+    show: ['url']
+  },
+  get: {
+    urlLabel: 'GET URL',
+    show: ['url']
+  },
+  custom: {
+    urlLabel: 'POST URL',
+    show: ['url', 'customBody']
+  }
 };
 
 function setText(node, value) {
@@ -207,6 +279,303 @@ function renderMessages(messages) {
   elements.messageList.append(fragment);
 }
 
+function getPushTypeLabel(type) {
+  return PUSH_TYPE_OPTIONS[type] || type || '推送通道';
+}
+
+function createDefaultPushChannel(type = 'dingtalk') {
+  return {
+    enabled: true,
+    type,
+    name: `${getPushTypeLabel(type)}通知`,
+    url: '',
+    secret: '',
+    key1: '',
+    key2: '',
+    customBody: type === 'custom' ? '{"from":"{sender}","message":"{message}","timestamp":"{timestamp}"}' : ''
+  };
+}
+
+function normalizePushChannel(channel = {}) {
+  const fallback = createDefaultPushChannel(channel.type || 'dingtalk');
+  return {
+    ...fallback,
+    enabled: Boolean(channel.enabled),
+    type: String(channel.type || fallback.type),
+    name: String(channel.name || fallback.name),
+    url: String(channel.url || ''),
+    secret: String(channel.secret || ''),
+    key1: String(channel.key1 || ''),
+    key2: String(channel.key2 || ''),
+    customBody: String(channel.customBody || '')
+  };
+}
+
+function setPushStatus(message, type = '') {
+  setStatusMessage(elements.pushStatus, message, type);
+}
+
+function getPushControls() {
+  return elements.pushChannelForm.elements;
+}
+
+function readPushChannelForm() {
+  const controls = getPushControls();
+  return {
+    enabled: controls.enabled.checked,
+    type: String(controls.type.value || 'dingtalk'),
+    name: String(controls.name.value || '').trim(),
+    url: String(controls.url.value || '').trim(),
+    secret: String(controls.secret.value || '').trim(),
+    key1: String(controls.key1.value || '').trim(),
+    key2: String(controls.key2.value || '').trim(),
+    customBody: String(controls.customBody.value || '').trim()
+  };
+}
+
+function writePushChannelForm(channel) {
+  const controls = getPushControls();
+  controls.enabled.checked = Boolean(channel.enabled);
+  controls.type.value = channel.type;
+  controls.name.value = channel.name;
+  controls.url.value = channel.url;
+  controls.secret.value = channel.secret;
+  controls.key1.value = channel.key1;
+  controls.key2.value = channel.key2;
+  controls.customBody.value = channel.customBody;
+  updatePushFieldVisibility(channel.type);
+}
+
+function clearPushChannelForm() {
+  writePushChannelForm(createDefaultPushChannel());
+}
+
+function setPushFieldVisible(name, visible) {
+  const row = elements.pushChannelForm.querySelector(`[data-push-field="${name}"]`);
+  if (row) {
+    row.classList.toggle('is-hidden', !visible);
+  }
+}
+
+function updatePushFieldVisibility(type) {
+  const meta = PUSH_TYPE_META[type] || PUSH_TYPE_META.dingtalk;
+  const visibleFields = new Set(meta.show || []);
+
+  elements.pushUrlLabel.textContent = meta.urlLabel || 'Webhook URL';
+  elements.pushSecretLabel.textContent = meta.secretLabel || '密钥';
+  elements.pushKey1Label.textContent = meta.key1Label || 'Key1';
+  elements.pushKey2Label.textContent = meta.key2Label || 'Key2';
+
+  ['url', 'secret', 'key1', 'key2', 'customBody'].forEach((name) => {
+    setPushFieldVisible(name, visibleFields.has(name));
+  });
+}
+
+function syncCurrentPushChannel() {
+  const index = state.selectedPushChannel;
+  if (index < 0 || !state.pushChannels[index] || elements.pushFormFields.disabled) {
+    return;
+  }
+
+  state.pushChannels[index] = normalizePushChannel(readPushChannelForm());
+}
+
+function renderPushChannelList() {
+  elements.pushChannelList.replaceChildren();
+
+  if (!state.pushChannels.length) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state empty-state--light';
+    empty.textContent = '暂无推送通道。';
+    elements.pushChannelList.append(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  state.pushChannels.forEach((channel, index) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = `channel-list__item${index === state.selectedPushChannel ? ' is-active' : ''}`;
+
+    const name = document.createElement('span');
+    name.className = 'channel-list__name';
+    name.textContent = channel.name || getPushTypeLabel(channel.type);
+
+    const meta = document.createElement('span');
+    meta.className = 'channel-list__meta';
+
+    const type = document.createElement('span');
+    type.textContent = getPushTypeLabel(channel.type);
+
+    const status = document.createElement('span');
+    status.textContent = channel.enabled ? '启用' : '停用';
+
+    meta.append(type, status);
+    item.append(name, meta);
+    item.addEventListener('click', () => {
+      selectPushChannel(index);
+    });
+    fragment.append(item);
+  });
+
+  elements.pushChannelList.append(fragment);
+}
+
+function renderPushChannelForm() {
+  const channel = state.pushChannels[state.selectedPushChannel];
+  const hasChannel = Boolean(channel);
+
+  elements.pushFormFields.disabled = !hasChannel;
+  elements.pushTestButton.disabled = !hasChannel;
+  elements.pushDeleteButton.disabled = !hasChannel;
+  elements.pushSaveButton.disabled = !state.pushLoaded;
+
+  if (!hasChannel) {
+    clearPushChannelForm();
+    return;
+  }
+
+  writePushChannelForm(channel);
+}
+
+function renderPushSettings() {
+  renderPushChannelList();
+  renderPushChannelForm();
+}
+
+function selectPushChannel(index) {
+  syncCurrentPushChannel();
+  state.selectedPushChannel = index;
+  renderPushSettings();
+  setPushStatus('');
+}
+
+function addPushChannel() {
+  syncCurrentPushChannel();
+  state.pushChannels.push(createDefaultPushChannel());
+  state.selectedPushChannel = state.pushChannels.length - 1;
+  renderPushSettings();
+  setPushStatus('');
+}
+
+function deletePushChannel() {
+  if (state.selectedPushChannel < 0) {
+    return;
+  }
+
+  state.pushChannels.splice(state.selectedPushChannel, 1);
+  state.selectedPushChannel = Math.min(state.selectedPushChannel, state.pushChannels.length - 1);
+  renderPushSettings();
+  setPushStatus('');
+}
+
+async function loadPushChannels() {
+  elements.pushAddButton.disabled = true;
+  elements.pushSaveButton.disabled = true;
+  elements.pushTestButton.disabled = true;
+  elements.pushDeleteButton.disabled = true;
+  setPushStatus('加载中...');
+
+  try {
+    const result = await requestJSON('/api/push/channels');
+    state.pushChannels = (result.data || []).map(normalizePushChannel);
+    state.selectedPushChannel = state.pushChannels.length ? 0 : -1;
+    state.pushLoaded = true;
+    renderPushSettings();
+    setPushStatus('');
+  } catch (err) {
+    setPushStatus(err.message, 'error');
+  } finally {
+    elements.pushAddButton.disabled = false;
+    elements.pushSaveButton.disabled = !state.pushLoaded;
+  }
+}
+
+function openPushModal() {
+  elements.pushModal.classList.add('is-open');
+  elements.pushModal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('modal-open');
+
+  if (!state.pushLoaded) {
+    loadPushChannels();
+  } else {
+    renderPushSettings();
+    setPushStatus('');
+  }
+}
+
+function closePushModal() {
+  syncCurrentPushChannel();
+  elements.pushModal.classList.remove('is-open');
+  elements.pushModal.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('modal-open');
+}
+
+async function savePushChannels(event) {
+  event.preventDefault();
+  syncCurrentPushChannel();
+
+  elements.pushSaveButton.disabled = true;
+  setPushStatus('保存中...');
+
+  try {
+    const result = await requestJSON('/api/push/channels', {
+      method: 'PUT',
+      body: JSON.stringify({ channels: state.pushChannels })
+    });
+    state.pushChannels = (result.data || []).map(normalizePushChannel);
+    if (state.selectedPushChannel >= state.pushChannels.length) {
+      state.selectedPushChannel = state.pushChannels.length - 1;
+    }
+    renderPushSettings();
+    setPushStatus(result.message || '推送通道配置已保存。', 'success');
+    await refreshLogs();
+  } catch (err) {
+    setPushStatus(err.message, 'error');
+  } finally {
+    elements.pushSaveButton.disabled = false;
+  }
+}
+
+async function testPushChannel() {
+  syncCurrentPushChannel();
+
+  const channel = state.pushChannels[state.selectedPushChannel];
+  if (!channel) {
+    setPushStatus('请先新增一个推送通道。', 'error');
+    return;
+  }
+
+  elements.pushTestButton.disabled = true;
+  setPushStatus('测试发送中...');
+
+  try {
+    const result = await requestJSON('/api/push/test', {
+      method: 'POST',
+      body: JSON.stringify({ channel })
+    });
+    setPushStatus(result.message || '测试推送已发送。', 'success');
+    await refreshLogs();
+  } catch (err) {
+    setPushStatus(err.message, 'error');
+  } finally {
+    elements.pushTestButton.disabled = false;
+  }
+}
+
+function handlePushTypeChange() {
+  const controls = getPushControls();
+  const type = controls.type.value;
+
+  updatePushFieldVisibility(type);
+  if (!controls.name.value.trim()) {
+    controls.name.value = `${getPushTypeLabel(type)}通知`;
+  }
+  if (type === 'custom' && !controls.customBody.value.trim()) {
+    controls.customBody.value = createDefaultPushChannel('custom').customBody;
+  }
+}
+
 async function refreshLogs() {
   const logs = await requestJSON('/api/logs');
   renderLogs(logs.data || []);
@@ -304,11 +673,28 @@ async function runATCommand(event) {
   }
 }
 
+elements.pushSettingsButton.addEventListener('click', openPushModal);
+elements.pushModalClose.addEventListener('click', closePushModal);
+elements.pushModal.addEventListener('click', (event) => {
+  if (event.target.matches('[data-close-push-modal]')) {
+    closePushModal();
+  }
+});
+elements.pushAddButton.addEventListener('click', addPushChannel);
+elements.pushDeleteButton.addEventListener('click', deletePushChannel);
+elements.pushChannelForm.addEventListener('submit', savePushChannels);
+elements.pushTestButton.addEventListener('click', testPushChannel);
+elements.pushChannelForm.elements.type.addEventListener('change', handlePushTypeChange);
 elements.refreshButton.addEventListener('click', refreshAll);
 elements.logsButton.addEventListener('click', refreshLogs);
 elements.messagesButton.addEventListener('click', refreshMessages);
 elements.smsForm.addEventListener('submit', sendSMS);
 elements.atForm.addEventListener('submit', runATCommand);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && elements.pushModal.classList.contains('is-open')) {
+    closePushModal();
+  }
+});
 
 refreshAll();
 setInterval(() => {

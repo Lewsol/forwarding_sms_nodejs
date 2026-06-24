@@ -1,3 +1,4 @@
+import fs from 'fs';
 import express from 'express';
 import crypto from 'crypto';
 import path from 'path';
@@ -7,13 +8,39 @@ import logger from './logger.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const PUSH_CHANNEL_TYPES = new Set([
+  'post_json',
+  'bark',
+  'get',
+  'dingtalk',
+  'pushplus',
+  'serverchan',
+  'custom',
+  'feishu',
+  'telegram'
+]);
+
+const PUSH_CHANNEL_TYPE_LABELS = {
+  post_json: 'POST JSON',
+  bark: 'Bark',
+  get: 'GET',
+  dingtalk: '钉钉',
+  pushplus: 'PushPlus',
+  serverchan: 'Server酱',
+  custom: '自定义',
+  feishu: '飞书',
+  telegram: 'Telegram'
+};
+
 class APIServer {
-  constructor(config, modem, smsProcessor) {
+  constructor(config, modem, smsProcessor, pushManager) {
     this.config = config;
     this.modem = modem;
     this.smsProcessor = smsProcessor;
+    this.pushManager = pushManager;
     this.app = express();
     this.publicDir = path.join(__dirname, '../public');
+    this.configPath = path.join(__dirname, '../config.json');
 
     this.setupMiddleware();
     this.setupRoutes();
@@ -194,6 +221,135 @@ class APIServer {
 </html>`);
   }
 
+  async readConfigFile() {
+    const configContent = await fs.promises.readFile(this.configPath, 'utf8');
+    return JSON.parse(configContent);
+  }
+
+  async savePushChannels(channels) {
+    const diskConfig = await this.readConfigFile();
+    diskConfig.pushChannels = channels;
+
+    await fs.promises.writeFile(
+      this.configPath,
+      `${JSON.stringify(diskConfig, null, 2)}\n`,
+      'utf8'
+    );
+
+    this.config.pushChannels = channels;
+    if (this.pushManager?.config) {
+      this.pushManager.config.pushChannels = channels;
+    }
+  }
+
+  getPushChannelsFromConfig(config = this.config) {
+    return Array.isArray(config.pushChannels) ? config.pushChannels : [];
+  }
+
+  normalizePushChannels(channels) {
+    if (!Array.isArray(channels)) {
+      throw new Error('pushChannels 必须是数组');
+    }
+
+    if (channels.length > 30) {
+      throw new Error('推送通道数量不能超过 30 个');
+    }
+
+    return channels.map((channel, index) => this.normalizePushChannel(channel, index));
+  }
+
+  normalizePushChannel(channel, index = 0) {
+    if (!channel || typeof channel !== 'object' || Array.isArray(channel)) {
+      throw new Error(`第 ${index + 1} 个推送通道格式不正确`);
+    }
+
+    const type = this.normalizeString(channel.type, '推送类型', 32);
+    if (!PUSH_CHANNEL_TYPES.has(type)) {
+      throw new Error(`第 ${index + 1} 个推送通道类型不支持`);
+    }
+
+    const typeLabel = PUSH_CHANNEL_TYPE_LABELS[type] || type;
+    const fallbackName = `${typeLabel}通知`;
+    const name = this.normalizeString(channel.name || fallbackName, '通道名称', 80);
+
+    return {
+      enabled: Boolean(channel.enabled),
+      type,
+      name: name || fallbackName,
+      url: this.normalizeString(channel.url, 'URL', 2048),
+      secret: this.normalizeString(channel.secret, '密钥', 2048),
+      key1: this.normalizeString(channel.key1, 'Key1', 2048),
+      key2: this.normalizeString(channel.key2, 'Key2', 2048),
+      customBody: this.normalizeString(channel.customBody, '自定义请求体', 10000)
+    };
+  }
+
+  normalizeString(value, fieldName, maxLength) {
+    const text = String(value ?? '').trim();
+    if (text.length > maxLength) {
+      throw new Error(`${fieldName}长度不能超过 ${maxLength} 个字符`);
+    }
+    return text;
+  }
+
+  validatePushChannels(channels) {
+    channels.forEach((channel, index) => {
+      this.validatePushChannel(channel, { index });
+    });
+  }
+
+  validatePushChannel(channel, options = {}) {
+    const index = options.index ?? 0;
+    const requireDestination = Boolean(options.requireDestination || channel.enabled);
+    const prefix = `第 ${index + 1} 个推送通道`;
+    const urlTypes = new Set(['post_json', 'bark', 'get', 'dingtalk', 'custom', 'feishu']);
+
+    if (urlTypes.has(channel.type)) {
+      if (requireDestination && !channel.url) {
+        throw new Error(`${prefix}缺少 URL`);
+      }
+
+      if (channel.url && !this.isHttpUrl(channel.url)) {
+        throw new Error(`${prefix}的 URL 格式不正确`);
+      }
+    }
+
+    if (channel.type === 'telegram') {
+      if (requireDestination && !channel.url) {
+        throw new Error(`${prefix}缺少 Bot Token`);
+      }
+
+      if (requireDestination && !channel.key1) {
+        throw new Error(`${prefix}缺少 Chat ID`);
+      }
+    }
+
+    if (channel.type === 'pushplus' && requireDestination && !channel.key1) {
+      throw new Error(`${prefix}缺少 PushPlus Token`);
+    }
+
+    if (channel.type === 'serverchan' && requireDestination && !channel.key1) {
+      throw new Error(`${prefix}缺少 Server酱 SendKey`);
+    }
+
+    if (channel.type === 'custom' && channel.customBody) {
+      try {
+        JSON.parse(channel.customBody);
+      } catch (err) {
+        throw new Error(`${prefix}的自定义请求体不是有效 JSON`);
+      }
+    }
+  }
+
+  isHttpUrl(value) {
+    try {
+      const url = new URL(value);
+      return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch (err) {
+      return false;
+    }
+  }
+
   setupRoutes() {
     this.app.get('/', (req, res) => {
       res.redirect('/admin');
@@ -351,6 +507,87 @@ class APIServer {
       } catch (err) {
         logger.error('获取日志失败:', err);
         res.status(500).json({
+          success: false,
+          error: err.message
+        });
+      }
+    });
+
+    // 查询推送通道配置
+    this.app.get('/api/push/channels', async (req, res) => {
+      try {
+        const diskConfig = await this.readConfigFile();
+        const channels = this.normalizePushChannels(this.getPushChannelsFromConfig(diskConfig));
+
+        res.json({
+          success: true,
+          data: channels
+        });
+      } catch (err) {
+        logger.error('读取推送通道配置失败:', err);
+        res.status(500).json({
+          success: false,
+          error: err.message
+        });
+      }
+    });
+
+    // 保存推送通道配置
+    this.app.put('/api/push/channels', async (req, res) => {
+      try {
+        const rawChannels = Array.isArray(req.body) ? req.body : req.body?.channels;
+        const channels = this.normalizePushChannels(rawChannels);
+        this.validatePushChannels(channels);
+        await this.savePushChannels(channels);
+
+        res.json({
+          success: true,
+          message: '推送通道配置已保存',
+          data: channels
+        });
+      } catch (err) {
+        logger.error('保存推送通道配置失败:', err);
+        res.status(400).json({
+          success: false,
+          error: err.message
+        });
+      }
+    });
+
+    // 测试推送通道
+    this.app.post('/api/push/test', async (req, res) => {
+      try {
+        if (!this.pushManager) {
+          return res.status(500).json({
+            success: false,
+            error: '推送管理器未初始化'
+          });
+        }
+
+        const channel = this.normalizePushChannel(req.body?.channel || req.body);
+        this.validatePushChannel(channel, { requireDestination: true });
+
+        const success = await this.pushManager.pushToChannel(
+          { ...channel, enabled: true },
+          '测试号码',
+          '这是一条短信网关推送测试消息',
+          new Date().toISOString()
+        );
+
+        if (!success) {
+          return res.status(502).json({
+            success: false,
+            error: '测试推送发送失败，请查看运行日志'
+          });
+        }
+
+        res.json({
+          success: true,
+          message: '测试推送已发送'
+        });
+      } catch (err) {
+        logger.error('测试推送失败:', err);
+        res.status(400).json({
           success: false,
           error: err.message
         });

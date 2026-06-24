@@ -20,7 +20,10 @@
         <a href="#console">AT 控制台</a>
         <a href="#logs">日志</a>
       </nav>
-      <button class="button button--secondary" id="refreshButton" type="button">刷新状态</button>
+      <div class="top-nav__actions">
+        <button class="button button--secondary" id="pushSettingsButton" type="button">推送渠道</button>
+        <button class="button button--secondary" id="refreshButton" type="button">刷新状态</button>
+      </div>
     </div>
   </header>
 
@@ -164,6 +167,92 @@
       </div>
     </section>
   </main>
+
+  <div class="modal" id="pushModal" aria-hidden="true">
+    <div class="modal__backdrop" data-close-push-modal></div>
+    <section class="modal__dialog" role="dialog" aria-modal="true" aria-labelledby="pushModalTitle">
+      <div class="modal__header">
+        <div>
+          <span class="badge badge--soft">push</span>
+          <h2 id="pushModalTitle">推送渠道设置</h2>
+        </div>
+        <button class="icon-button" id="pushModalClose" type="button" aria-label="关闭推送渠道设置">×</button>
+      </div>
+
+      <div class="push-settings">
+        <aside class="channel-list-panel" aria-label="推送渠道列表">
+          <div class="panel-header panel-header--light">
+            <span>channels</span>
+            <button class="button button--secondary button--compact" id="pushAddButton" type="button">新增</button>
+          </div>
+          <div class="channel-list" id="pushChannelList"></div>
+        </aside>
+
+        <form class="channel-form" id="pushChannelForm">
+          <fieldset class="form-fieldset" id="pushFormFields" disabled>
+            <div class="channel-form__grid">
+              <label class="switch-row">
+                <input type="checkbox" name="enabled">
+                <span>启用通道</span>
+              </label>
+
+              <label>
+                <span>通道名称</span>
+                <input class="text-input" type="text" name="name" maxlength="80" placeholder="钉钉通知">
+              </label>
+
+              <label>
+                <span>推送类型</span>
+                <select class="text-input select-input" name="type">
+                  <option value="dingtalk">钉钉机器人</option>
+                  <option value="feishu">飞书机器人</option>
+                  <option value="telegram">Telegram Bot</option>
+                  <option value="pushplus">PushPlus</option>
+                  <option value="serverchan">Server酱</option>
+                  <option value="post_json">POST JSON</option>
+                  <option value="bark">Bark</option>
+                  <option value="get">GET</option>
+                  <option value="custom">自定义 POST</option>
+                </select>
+              </label>
+
+              <label class="field-row field-row--wide" data-push-field="url">
+                <span id="pushUrlLabel">Webhook URL</span>
+                <input class="text-input" type="text" name="url" autocomplete="off">
+              </label>
+
+              <label class="field-row field-row--wide" data-push-field="secret">
+                <span id="pushSecretLabel">加签密钥</span>
+                <input class="text-input" type="password" name="secret" autocomplete="new-password">
+              </label>
+
+              <label class="field-row" data-push-field="key1">
+                <span id="pushKey1Label">Key1</span>
+                <input class="text-input" type="text" name="key1" autocomplete="off">
+              </label>
+
+              <label class="field-row" data-push-field="key2">
+                <span id="pushKey2Label">Key2</span>
+                <input class="text-input" type="text" name="key2" autocomplete="off">
+              </label>
+
+              <label class="field-row field-row--wide" data-push-field="customBody">
+                <span>自定义请求体 JSON</span>
+                <textarea class="text-input text-area text-area--code" name="customBody" rows="7" spellcheck="false"></textarea>
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="form-actions channel-form__actions">
+            <button class="button button--primary" id="pushSaveButton" type="submit">保存设置</button>
+            <button class="button button--secondary" id="pushTestButton" type="button">发送测试</button>
+            <button class="button button--danger" id="pushDeleteButton" type="button">删除通道</button>
+            <p class="form-status" id="pushStatus" role="status"></p>
+          </div>
+        </form>
+      </div>
+    </section>
+  </div>
 
   <footer class="footer">
     <div class="container footer__inner">
