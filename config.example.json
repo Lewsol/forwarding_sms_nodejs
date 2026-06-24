@@ -1,0 +1,74 @@
+{
+  "serial": {
+    "path": "COM3",
+    "baudRate": 115200,
+    "_comment": "Windows使用COM1/COM2/COM3等，也可以直接写数字如3; Linux使用/dev/ttyUSB0"
+  },
+  "smtp": {
+    "server": "smtp.qq.com",
+    "port": 465,
+    "user": "your@qq.com",
+    "pass": "your_auth_code",
+    "sendTo": "recipient@example.com"
+  },
+  "pushChannels": [
+    {
+      "enabled": true,
+      "type": "dingtalk",
+      "name": "钉钉通知",
+      "url": "https://oapi.dingtalk.com/robot/send?access_token=xxx",
+      "secret": "SECxxx",
+      "key1": "",
+      "key2": "",
+      "customBody": ""
+    },
+    {
+      "enabled": false,
+      "type": "feishu",
+      "name": "飞书通知",
+      "url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxx",
+      "secret": "",
+      "key1": "",
+      "key2": "",
+      "customBody": ""
+    },
+    {
+      "enabled": false,
+      "type": "telegram",
+      "name": "Telegram通知",
+      "url": "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz",
+      "secret": "",
+      "key1": "987654321",
+      "key2": "",
+      "customBody": ""
+    },
+    {
+      "enabled": false,
+      "type": "pushplus",
+      "name": "PushPlus通知",
+      "url": "",
+      "secret": "",
+      "key1": "your_pushplus_token",
+      "key2": "",
+      "customBody": ""
+    },
+    {
+      "enabled": false,
+      "type": "custom",
+      "name": "自定义推送",
+      "url": "https://your-webhook.com/api/notify",
+      "secret": "",
+      "key1": "",
+      "key2": "",
+      "customBody": "{\"from\":\"{sender}\",\"msg\":\"{message}\",\"ts\":\"{timestamp}\"}"
+    }
+  ],
+  "api": {
+    "port": 3000,
+    "webToken": "change-this-token",
+    "auth": {
+      "username": "admin",
+      "password": "admin123"
+    }
+  }
+}
