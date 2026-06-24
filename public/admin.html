@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SMS Gateway 管理台</title>
+  <link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+  <header class="top-nav">
+    <div class="top-nav__inner">
+      <a class="brand" href="/admin" aria-label="SMS Gateway 管理台">
+        <span class="brand__mark" aria-hidden="true">✣</span>
+        <span>SMS Gateway</span>
+      </a>
+      <nav class="nav-links" aria-label="管理导航">
+        <a href="#status">状态</a>
+        <a href="#inbox">收件箱</a>
+        <a href="#send">短信</a>
+        <a href="#console">AT 控制台</a>
+        <a href="#logs">日志</a>
+      </nav>
+      <button class="button button--secondary" id="refreshButton" type="button">刷新状态</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero-band" id="status">
+      <div class="container hero-grid">
+        <div class="hero-copy">
+          <span class="badge badge--coral" id="readyBadge">连接检测中</span>
+          <h1>短信网关管理台</h1>
+          <p>集中查看 ML307A 模组状态、发送短信、执行 AT 命令，并检查运行日志。</p>
+        </div>
+
+        <div class="product-panel" aria-label="运行摘要">
+          <div class="panel-header">
+            <span>runtime</span>
+            <strong id="panelStatus">loading</strong>
+          </div>
+          <dl class="runtime-list">
+            <div>
+              <dt>模组</dt>
+              <dd id="modelName">--</dd>
+            </div>
+            <div>
+              <dt>运营商</dt>
+              <dd id="operator">--</dd>
+            </div>
+            <div>
+              <dt>信号</dt>
+              <dd id="signalQuality">--</dd>
+            </div>
+            <div>
+              <dt>运行时长</dt>
+              <dd id="uptime">--</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-band section-band--soft">
+      <div class="container">
+        <div class="section-heading">
+          <h2>当前状态</h2>
+          <p>这些数据来自模组实时 AT 查询，刷新时会串行读取，避免同时发送多条 AT 命令。</p>
+        </div>
+        <div class="status-grid">
+          <article class="feature-card">
+            <span class="eyebrow">connection</span>
+            <h3 id="connectionState">--</h3>
+            <p id="connectionHint">等待状态刷新。</p>
+          </article>
+          <article class="feature-card">
+            <span class="eyebrow">signal</span>
+            <h3 id="signalValue">--</h3>
+            <p id="signalHint">RSSI 与误码率将在刷新后显示。</p>
+          </article>
+          <article class="feature-card">
+            <span class="eyebrow">module</span>
+            <h3 id="moduleModel">--</h3>
+            <p id="moduleVersion">--</p>
+          </article>
+          <article class="feature-card">
+            <span class="eyebrow">sim</span>
+            <h3 id="iccid">--</h3>
+            <p>ICCID 查询来自当前串口模组。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-band">
+      <div class="container" id="inbox">
+        <div class="section-heading">
+          <div>
+            <span class="badge badge--soft">inbox</span>
+            <h2>收到的短信</h2>
+          </div>
+          <button class="button button--secondary" id="messagesButton" type="button">刷新短信</button>
+        </div>
+        <div class="inbox-panel">
+          <div class="inbox-meta">
+            <span id="messageCount">最近 0 条</span>
+            <span>新短信会自动出现在这里</span>
+          </div>
+          <div class="message-list" id="messageList" aria-live="polite">
+            <p class="empty-state empty-state--light">暂无收到的短信。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-band section-band--soft">
+      <div class="container workbench-grid">
+        <section class="form-card" id="send">
+          <div class="section-heading section-heading--compact">
+            <h2>发送短信</h2>
+            <p>使用当前 PDU 模式发送短信，提交后等待模组返回发送结果。</p>
+          </div>
+          <form id="smsForm" class="stack-form">
+            <label>
+              <span>目标号码</span>
+              <input class="text-input" type="tel" name="phone" autocomplete="tel" placeholder="13800138000" required>
+            </label>
+            <label>
+              <span>短信内容</span>
+              <textarea class="text-input text-area" name="message" rows="6" placeholder="输入要发送的短信内容" required></textarea>
+            </label>
+            <div class="form-actions">
+              <button class="button button--primary" type="submit">发送短信</button>
+              <p class="form-status" id="smsStatus" role="status"></p>
+            </div>
+          </form>
+        </section>
+
+        <section class="console-card" id="console">
+          <div class="panel-header">
+            <span>AT console</span>
+            <strong id="consoleState">idle</strong>
+          </div>
+          <form id="atForm" class="at-form">
+            <input class="text-input text-input--dark" name="command" value="AT+CSQ" autocomplete="off" spellcheck="false" required>
+            <button class="button button--secondary-on-dark" type="submit">执行</button>
+          </form>
+          <pre class="console-output" id="atOutput">等待命令...</pre>
+        </section>
+      </div>
+    </section>
+
+    <section class="section-band section-band--dark" id="logs">
+      <div class="container">
+        <div class="dark-heading">
+          <div>
+            <span class="badge badge--dark">logs</span>
+            <h2>运行日志</h2>
+          </div>
+          <button class="button button--secondary-on-dark" id="logsButton" type="button">刷新日志</button>
+        </div>
+        <div class="log-window" id="logWindow" aria-live="polite">
+          <p class="empty-state">等待日志加载。</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer__inner">
+      <span class="brand brand--footer"><span class="brand__mark" aria-hidden="true">✣</span> SMS Gateway</span>
+      <span>Basic Auth protected management surface</span>
+    </div>
+  </footer>
+
+  <script src="/assets/admin.js" type="module"></script>
+</body>
+</html>
