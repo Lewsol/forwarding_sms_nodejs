@@ -9,6 +9,7 @@ const elements = {
   pushSettingsButton: document.querySelector('#pushSettingsButton'),
   pushModal: document.querySelector('#pushModal'),
   pushModalClose: document.querySelector('#pushModalClose'),
+  pushAddTypeSelect: document.querySelector('#pushAddTypeSelect'),
   pushAddButton: document.querySelector('#pushAddButton'),
   pushDeleteButton: document.querySelector('#pushDeleteButton'),
   pushSaveButton: document.querySelector('#pushSaveButton'),
@@ -452,7 +453,8 @@ function selectPushChannel(index) {
 
 function addPushChannel() {
   syncCurrentPushChannel();
-  state.pushChannels.push(createDefaultPushChannel());
+  const type = elements.pushAddTypeSelect?.value || 'dingtalk';
+  state.pushChannels.push(createDefaultPushChannel(type));
   state.selectedPushChannel = state.pushChannels.length - 1;
   renderPushSettings();
   setPushStatus('');
@@ -565,15 +567,21 @@ async function testPushChannel() {
 
 function handlePushTypeChange() {
   const controls = getPushControls();
+  const channel = state.pushChannels[state.selectedPushChannel];
+  const previousType = channel?.type || 'dingtalk';
+  const previousDefaultName = createDefaultPushChannel(previousType).name;
   const type = controls.type.value;
+  const nextDefaultName = createDefaultPushChannel(type).name;
+  const currentName = controls.name.value.trim();
 
   updatePushFieldVisibility(type);
-  if (!controls.name.value.trim()) {
-    controls.name.value = `${getPushTypeLabel(type)}通知`;
+  if (!currentName || currentName === previousDefaultName) {
+    controls.name.value = nextDefaultName;
   }
   if (type === 'custom' && !controls.customBody.value.trim()) {
     controls.customBody.value = createDefaultPushChannel('custom').customBody;
   }
+  syncCurrentPushChannel();
 }
 
 async function refreshLogs() {

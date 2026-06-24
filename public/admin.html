@@ -183,7 +183,20 @@
         <aside class="channel-list-panel" aria-label="推送渠道列表">
           <div class="panel-header panel-header--light">
             <span>channels</span>
-            <button class="button button--secondary button--compact" id="pushAddButton" type="button">新增</button>
+            <div class="channel-add">
+              <select class="text-input select-input channel-add__select" id="pushAddTypeSelect" aria-label="新增推送类型">
+                <option value="dingtalk">钉钉机器人</option>
+                <option value="feishu">飞书机器人</option>
+                <option value="telegram">Telegram Bot</option>
+                <option value="pushplus">PushPlus</option>
+                <option value="serverchan">Server酱</option>
+                <option value="post_json">POST JSON</option>
+                <option value="bark">Bark</option>
+                <option value="get">GET</option>
+                <option value="custom">自定义 POST</option>
+              </select>
+              <button class="button button--secondary button--compact" id="pushAddButton" type="button">新增</button>
+            </div>
           </div>
           <div class="channel-list" id="pushChannelList"></div>
         </aside>

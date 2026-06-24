@@ -731,6 +731,27 @@ body.modal-open {
   color: var(--muted);
 }
 
+.channel-list-panel .panel-header {
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: start;
+  gap: 10px;
+}
+
+.channel-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  width: 100%;
+}
+
+.channel-add__select {
+  min-height: 32px;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
 .channel-list {
   display: grid;
   gap: 10px;
