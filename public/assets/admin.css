@@ -363,7 +363,7 @@ h3 {
 
 .status-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 16px;
 }
 
@@ -378,10 +378,24 @@ h3 {
   min-height: 190px;
 }
 
+.feature-card--control {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+}
+
 .feature-card p {
   margin-top: 14px;
   color: var(--muted);
   font-size: 14px;
+}
+
+.feature-card__actions {
+  margin-top: 18px;
+}
+
+.mobile-data-status {
+  min-height: 20px;
+  margin-top: 10px;
 }
 
 .eyebrow {

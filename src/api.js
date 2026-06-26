@@ -364,6 +364,7 @@ class APIServer {
       try {
         const signal = await this.modem.getSignalQuality();
         const operator = await this.modem.getOperator();
+        const mobileData = await this.modem.getMobileDataStatus();
 
         res.json({
           success: true,
@@ -372,6 +373,7 @@ class APIServer {
             model: this.modem.modelInfo,
             signal,
             operator,
+            mobileData,
             uptime: process.uptime()
           }
         });
@@ -459,6 +461,48 @@ class APIServer {
         });
       } catch (err) {
         logger.error('查询模组信息失败:', err);
+        res.status(500).json({
+          success: false,
+          error: err.message
+        });
+      }
+    });
+
+    // 查询移动数据连接状态
+    this.app.get('/api/modem/mobile-data', async (req, res) => {
+      try {
+        const mobileData = await this.modem.getMobileDataStatus();
+        res.json({
+          success: true,
+          data: mobileData
+        });
+      } catch (err) {
+        logger.error('查询移动数据状态失败:', err);
+        res.status(500).json({
+          success: false,
+          error: err.message
+        });
+      }
+    });
+
+    // 开启或关闭移动数据连接
+    this.app.post('/api/modem/mobile-data', async (req, res) => {
+      try {
+        if (typeof req.body?.enabled !== 'boolean') {
+          return res.status(400).json({
+            success: false,
+            error: '缺少必要参数: enabled'
+          });
+        }
+
+        const mobileData = await this.modem.setMobileDataEnabled(req.body.enabled);
+        res.json({
+          success: true,
+          message: req.body.enabled ? '移动数据已开启' : '移动数据已关闭',
+          data: mobileData
+        });
+      } catch (err) {
+        logger.error('设置移动数据状态失败:', err);
         res.status(500).json({
           success: false,
           error: err.message

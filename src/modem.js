@@ -7,9 +7,12 @@ import path from 'path';
 import logger from './logger.js';
 
 class ModemManager extends EventEmitter {
-  constructor(config) {
+  constructor(config, mobileDataConfig = {}) {
     super();
     this.config = config;
+    this.mobileDataConfig = {
+      cid: this.normalizeMobileDataCid(mobileDataConfig.cid)
+    };
     this.port = null;
     this.parser = null;
     this.ready = false;
@@ -17,6 +20,18 @@ class ModemManager extends EventEmitter {
       manufacturer: '未知',
       model: '未知',
       version: '未知'
+    };
+    this.mobileData = {
+      cid: this.mobileDataConfig.cid,
+      desiredEnabled: false,
+      enabled: false,
+      targetEnabled: false,
+      anyActive: false,
+      status: 'disabled',
+      mode: 'unknown',
+      contexts: [],
+      lastCheckedAt: null,
+      error: ''
     };
   }
 
@@ -356,6 +371,262 @@ class ModemManager extends EventEmitter {
     return result.reason;
   }
 
+  normalizeMobileDataCid(value) {
+    const cid = Number.parseInt(value, 10);
+    if (Number.isInteger(cid) && cid > 0 && cid <= 15 && cid !== 8) {
+      return cid;
+    }
+
+    return 1;
+  }
+
+  getMobileDataMode() {
+    return this.isML307Family() ? 'mipcall' : 'cgact';
+  }
+
+  getMobileDataCommand(mode = this.getMobileDataMode(), enabled = false, cid = this.mobileDataConfig.cid) {
+    if (mode === 'mipcall') {
+      return `AT+MIPCALL=${enabled ? 1 : 0},${cid}`;
+    }
+
+    return `AT+CGACT=${enabled ? 1 : 0},${cid}`;
+  }
+
+  getMobileDataStatusCommand(mode = this.getMobileDataMode()) {
+    return mode === 'mipcall' ? 'AT+MIPCALL?' : 'AT+CGACT?';
+  }
+
+  getCachedMobileDataStatus() {
+    return {
+      ...this.mobileData,
+      contexts: this.mobileData.contexts.map(item => ({ ...item }))
+    };
+  }
+
+  async getMobileDataStatus() {
+    const mode = this.getMobileDataMode();
+    const command = this.getMobileDataStatusCommand(mode);
+
+    try {
+      const resp = await this.sendATCommand(command, 5000);
+      const status = this.parseMobileDataStatusResponse(resp, mode);
+      this.updateMobileDataStatus(status);
+      return this.getCachedMobileDataStatus();
+    } catch (err) {
+      logger.warn(`查询移动数据状态失败: ${err.message}`);
+      this.updateMobileDataStatus({
+        mode,
+        cid: this.mobileDataConfig.cid,
+        status: 'unknown',
+        enabled: false,
+        targetEnabled: false,
+        anyActive: false,
+        contexts: [],
+        error: err.message
+      });
+      return this.getCachedMobileDataStatus();
+    }
+  }
+
+  parseMobileDataStatusResponse(resp, mode) {
+    const contexts = [];
+    const lines = resp.split('\n').map(line => line.trim()).filter(Boolean);
+
+    for (const line of lines) {
+      const payload = this.extractMobileDataPayload(line, mode);
+      if (!payload) {
+        continue;
+      }
+
+      const match = payload.match(/^(\d+)\s*,\s*(\d+)(.*)$/);
+      if (!match) {
+        continue;
+      }
+
+      const cid = Number.parseInt(match[1], 10);
+      const state = Number.parseInt(match[2], 10);
+      const addresses = [...match[3].matchAll(/"([^"]+)"/g)].map(item => item[1]).filter(Boolean);
+
+      contexts.push({
+        cid,
+        active: state === 1,
+        state,
+        addresses
+      });
+    }
+
+    const target = contexts.find(item => item.cid === this.mobileDataConfig.cid);
+    const anyActive = contexts.some(item => item.active);
+    const targetEnabled = target ? target.active : false;
+
+    return {
+      mode,
+      cid: this.mobileDataConfig.cid,
+      enabled: anyActive,
+      targetEnabled,
+      anyActive,
+      status: anyActive ? 'enabled' : 'disabled',
+      contexts,
+      error: ''
+    };
+  }
+
+  extractMobileDataPayload(line, mode) {
+    if (mode === 'mipcall') {
+      if (line.startsWith('+MIPCALL:')) {
+        return line.slice('+MIPCALL:'.length).trim();
+      }
+
+      if (/^\d+\s*,\s*\d+/.test(line)) {
+        return line;
+      }
+    }
+
+    if (line.startsWith('+CGACT:')) {
+      return line.slice('+CGACT:'.length).trim();
+    }
+
+    return '';
+  }
+
+  updateMobileDataStatus(status) {
+    this.mobileData = {
+      ...this.mobileData,
+      ...status,
+      cid: this.mobileDataConfig.cid,
+      lastCheckedAt: new Date().toISOString(),
+      contexts: Array.isArray(status.contexts) ? status.contexts : []
+    };
+  }
+
+  getMobileDataTargetCids(status) {
+    const cids = new Set([this.mobileDataConfig.cid]);
+    for (const context of status.contexts || []) {
+      if (context.active && context.cid !== 8) {
+        cids.add(context.cid);
+      }
+    }
+
+    return [...cids].filter(cid => this.normalizeMobileDataCid(cid) === cid);
+  }
+
+  async setMobileDataEnabled(enabled, options = {}) {
+    this.mobileData.desiredEnabled = Boolean(enabled);
+    if (enabled) {
+      return await this.enableMobileData(options);
+    }
+
+    return await this.disableMobileData(options);
+  }
+
+  async enableMobileData(options = {}) {
+    const mode = this.getMobileDataMode();
+    const cid = this.mobileDataConfig.cid;
+    const command = this.getMobileDataCommand(mode, true, cid);
+    const label = mode === 'mipcall' ? '开启移动数据拨号' : '激活PDP数据连接';
+
+    logger.warn(`准备开启移动数据(CID ${cid})，可能产生流量费用`);
+    const resp = await this.sendATWithRetry(command, {
+      timeout: 30000,
+      retries: 1,
+      label,
+      required: false
+    });
+
+    const status = await this.waitForMobileDataState(true, options.timeout || 20000);
+    if (!resp || !status.anyActive) {
+      throw new Error('移动数据开启失败，未检测到已激活的数据连接');
+    }
+
+    logger.info(`✓ 已开启移动数据(CID ${cid})`);
+    return status;
+  }
+
+  async disableMobileData(options = {}) {
+    const mode = this.getMobileDataMode();
+    const before = await this.getMobileDataStatus();
+    const cids = this.getMobileDataTargetCids(before);
+    const label = mode === 'mipcall' ? '关闭移动数据拨号' : '停用PDP数据连接';
+    let commandSucceeded = false;
+
+    logger.info(`${options.reason || '手动操作'}: 关闭移动数据，避免流量消耗`);
+
+    for (const cid of cids) {
+      const command = this.getMobileDataCommand(mode, false, cid);
+      const resp = await this.sendATWithRetry(command, {
+        timeout: 8000,
+        retries: 1,
+        label: `${label}(CID ${cid})`,
+        required: false
+      });
+
+      commandSucceeded = commandSucceeded || Boolean(resp);
+    }
+
+    const status = await this.waitForMobileDataState(false, options.timeout || 8000);
+    if (status.anyActive) {
+      const message = `移动数据关闭后仍检测到活动连接: ${this.formatMobileDataContexts(status.contexts)}`;
+      if (options.required === false) {
+        logger.warn(message);
+        return status;
+      }
+
+      throw new Error(message);
+    }
+
+    if (status.status === 'unknown') {
+      const message = commandSucceeded ? '移动数据关闭命令已发送，但状态未确认' : '移动数据关闭命令未确认成功';
+      if (options.required === false) {
+        logger.warn(message);
+        return status;
+      }
+
+      throw new Error(message);
+    }
+
+    if (!commandSucceeded && before.status === 'unknown' && options.required !== false) {
+      throw new Error('移动数据关闭命令未确认成功');
+    }
+
+    logger.info('✓ 移动数据已关闭');
+    return status;
+  }
+
+  async forceMobileDataOff(stage) {
+    this.mobileData.desiredEnabled = false;
+    try {
+      return await this.disableMobileData({
+        reason: stage,
+        required: false,
+        timeout: 5000
+      });
+    } catch (err) {
+      logger.warn(`${stage}: 移动数据关闭未确认: ${err.message}`);
+      return this.getCachedMobileDataStatus();
+    }
+  }
+
+  async waitForMobileDataState(enabled, timeout = 10000) {
+    const startedAt = Date.now();
+    let status = await this.getMobileDataStatus();
+
+    while (status.status !== 'unknown' && status.anyActive !== enabled && Date.now() - startedAt < timeout) {
+      await this.sleep(1000);
+      status = await this.getMobileDataStatus();
+    }
+
+    return status;
+  }
+
+  formatMobileDataContexts(contexts = []) {
+    const active = contexts
+      .filter(item => item.active)
+      .map(item => `CID ${item.cid}`)
+      .join(', ');
+
+    return active || '无';
+  }
+
   /**
    * 设置URC监听器
    */
@@ -521,7 +792,10 @@ class ModemManager extends EventEmitter {
     await this.waitSIMReady();
     await this.ensureFullFunctionality();
 
-    // 4. 等待网络注册
+    // 4. 启动保护：先关闭移动数据拨号，再等待短信所需的网络注册。
+    await this.forceMobileDataOff('启动保护(CFUN=1后)');
+
+    // 5. 等待网络注册
     retries = 0;
     while (!(await this.waitCEREG()) && retries < 30) {
       logger.info('等待网络注册...');
@@ -536,10 +810,10 @@ class ModemManager extends EventEmitter {
       this.ready = false;
     }
 
-    // 5. 数据连接处理。ML307文档不建议用CGACT做PDP激活/去激活。
-    await this.disableDataConnection();
+    // 6. 驻网后再关一次，防止模组自动拨号在驻网完成后重新拉起。
+    await this.forceMobileDataOff('启动保护(驻网后)');
 
-    // 6. 按文档配置短信功能，并启用本项目需要的PDU模式
+    // 7. 按文档配置短信功能，并启用本项目需要的PDU模式
     await this.configureSMS();
 
     logger.info('模组初始化完成');
@@ -591,41 +865,6 @@ class ModemManager extends EventEmitter {
     // 文档要求CFUN切换后等待模组完成协议栈恢复。
     await this.sleep(2000);
     logger.info('✓ 已设置协议栈功能模式(CFUN=1)');
-  }
-
-  /**
-   * 按模组型号处理数据连接，避免ML307系列使用文档不推荐的CGACT。
-   */
-  async disableDataConnection() {
-    if (this.isML307Family()) {
-      logger.info('ML307系列跳过AT+CGACT，按文档尝试断开应用层拨号(AT+MIPCALL=0,1)');
-      const resp = await this.sendATWithRetry('AT+MIPCALL=0,1', {
-        timeout: 5000,
-        retries: 1,
-        label: '断开应用层拨号',
-        required: false
-      });
-
-      if (resp) {
-        logger.info('✓ 已断开应用层拨号连接');
-      } else {
-        logger.warn('应用层拨号未断开或当前未激活，继续启动');
-      }
-      return;
-    }
-
-    const resp = await this.sendATWithRetry('AT+CGACT=0,1', {
-      timeout: 5000,
-      retries: 3,
-      label: '禁用数据连接',
-      required: false
-    });
-
-    if (resp) {
-      logger.info('✓ 已禁用数据连接(AT+CGACT=0,1)，防止流量消耗');
-    } else {
-      logger.warn('设置CGACT失败，可能会消耗流量');
-    }
   }
 
   /**

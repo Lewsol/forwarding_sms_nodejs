@@ -6,6 +6,10 @@
     "probeTimeout": 1200,
     "_comment": "Windows使用COM1/COM2/COM3等，也可以直接写数字如3; Linux使用/dev/ttyUSB0"
   },
+  "mobileData": {
+    "cid": 1,
+    "_comment": "每次启动都会强制关闭移动数据，管理台开关只影响当前运行期; ML307 cid8为IMS专用，请勿使用"
+  },
   "smtp": {
     "server": "smtp.qq.com",
     "port": 465,

@@ -55,6 +55,10 @@
               <dd id="signalQuality">--</dd>
             </div>
             <div>
+              <dt>移动数据</dt>
+              <dd id="mobileDataSummary">--</dd>
+            </div>
+            <div>
               <dt>运行时长</dt>
               <dd id="uptime">--</dd>
             </div>
@@ -79,6 +83,15 @@
             <span class="eyebrow">signal</span>
             <h3 id="signalValue">--</h3>
             <p id="signalHint">RSSI 与误码率将在刷新后显示。</p>
+          </article>
+          <article class="feature-card feature-card--control">
+            <span class="eyebrow">mobile data</span>
+            <h3 id="mobileDataState">--</h3>
+            <p id="mobileDataHint">启动时会自动关闭移动数据。</p>
+            <div class="feature-card__actions">
+              <button class="button button--secondary button--compact" id="mobileDataToggle" type="button" data-action="disable">强制关闭流量</button>
+            </div>
+            <p class="form-status mobile-data-status" id="mobileDataStatus" role="status"></p>
           </article>
           <article class="feature-card">
             <span class="eyebrow">module</span>

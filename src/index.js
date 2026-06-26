@@ -46,7 +46,7 @@ async function main() {
   logger.info('配置加载完成');
 
   // 创建模组管理器
-  const modem = new ModemManager(config.serial);
+  const modem = new ModemManager(config.serial, config.mobileData);
 
   // 创建长短信管理器
   const concatManager = new ConcatManager();
@@ -111,19 +111,27 @@ async function main() {
     process.exit(1);
   }
 
-  // 优雅退出
-  process.on('SIGINT', async () => {
-    logger.info('\n收到 SIGINT 信号，正在关闭...');
+  async function shutdown(signal) {
+    logger.info(`\n收到 ${signal} 信号，正在关闭...`);
     concatManager.stopTimeoutChecker();
+    await modem.forceMobileDataOff(`${signal}退出保护`);
     await modem.close();
     process.exit(0);
+  }
+
+  // 优雅退出
+  process.on('SIGINT', () => {
+    shutdown('SIGINT').catch((err) => {
+      logger.error('关闭失败:', err);
+      process.exit(1);
+    });
   });
 
-  process.on('SIGTERM', async () => {
-    logger.info('\n收到 SIGTERM 信号，正在关闭...');
-    concatManager.stopTimeoutChecker();
-    await modem.close();
-    process.exit(0);
+  process.on('SIGTERM', () => {
+    shutdown('SIGTERM').catch((err) => {
+      logger.error('关闭失败:', err);
+      process.exit(1);
+    });
   });
 
   // 捕获未处理的异常

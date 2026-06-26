@@ -1,5 +1,6 @@
 const state = {
   busy: false,
+  mobileDataBusy: false,
   pushChannels: [],
   selectedPushChannel: -1,
   pushLoaded: false
@@ -29,11 +30,16 @@ const elements = {
   modelName: document.querySelector('#modelName'),
   operator: document.querySelector('#operator'),
   signalQuality: document.querySelector('#signalQuality'),
+  mobileDataSummary: document.querySelector('#mobileDataSummary'),
   uptime: document.querySelector('#uptime'),
   connectionState: document.querySelector('#connectionState'),
   connectionHint: document.querySelector('#connectionHint'),
   signalValue: document.querySelector('#signalValue'),
   signalHint: document.querySelector('#signalHint'),
+  mobileDataState: document.querySelector('#mobileDataState'),
+  mobileDataHint: document.querySelector('#mobileDataHint'),
+  mobileDataToggle: document.querySelector('#mobileDataToggle'),
+  mobileDataStatus: document.querySelector('#mobileDataStatus'),
   moduleModel: document.querySelector('#moduleModel'),
   moduleVersion: document.querySelector('#moduleVersion'),
   iccid: document.querySelector('#iccid'),
@@ -152,6 +158,55 @@ function formatModel(model = {}) {
   return [model.manufacturer, model.model].filter(Boolean).join(' ') || '--';
 }
 
+function formatMobileDataMode(mode) {
+  if (mode === 'mipcall') {
+    return 'MIPCALL';
+  }
+  if (mode === 'cgact') {
+    return 'CGACT';
+  }
+  return 'AT';
+}
+
+function formatMobileDataContexts(contexts = []) {
+  const active = contexts
+    .filter(item => item.active)
+    .map(item => `CID ${item.cid}`)
+    .join('、');
+
+  return active || '';
+}
+
+function renderMobileData(mobileData = {}) {
+  const unknown = mobileData.status === 'unknown';
+  const enabled = Boolean(mobileData.enabled || mobileData.anyActive);
+  const cid = mobileData.cid || 1;
+  const mode = formatMobileDataMode(mobileData.mode);
+  const activeContexts = formatMobileDataContexts(mobileData.contexts || []);
+
+  if (unknown) {
+    setText(elements.mobileDataSummary, '未知');
+    setText(elements.mobileDataState, '状态未知');
+    setText(elements.mobileDataHint, mobileData.error || '未能确认移动数据状态，可先强制关闭。');
+    elements.mobileDataToggle.textContent = '强制关闭流量';
+    elements.mobileDataToggle.dataset.action = 'disable';
+  } else if (enabled) {
+    setText(elements.mobileDataSummary, '已开启');
+    setText(elements.mobileDataState, '流量已开启');
+    setText(elements.mobileDataHint, activeContexts ? `${mode} 检测到 ${activeContexts} 处于活动状态。` : `CID ${cid} 处于活动状态。`);
+    elements.mobileDataToggle.textContent = '关闭流量';
+    elements.mobileDataToggle.dataset.action = 'disable';
+  } else {
+    setText(elements.mobileDataSummary, '已关闭');
+    setText(elements.mobileDataState, '流量已关闭');
+    setText(elements.mobileDataHint, `${mode} CID ${cid} 未建立移动数据连接，重启后也会先保持关闭。`);
+    elements.mobileDataToggle.textContent = '开启流量';
+    elements.mobileDataToggle.dataset.action = 'enable';
+  }
+
+  elements.mobileDataToggle.disabled = state.mobileDataBusy;
+}
+
 function renderStatus(status, info) {
   const data = status.data || {};
   const infoData = info.data || {};
@@ -165,6 +220,7 @@ function renderStatus(status, info) {
   setText(elements.operator, data.operator || '未知');
   setText(elements.signalQuality, signal.quality || '未知');
   setText(elements.uptime, formatUptime(data.uptime));
+  renderMobileData(data.mobileData || {});
 
   setText(elements.connectionState, ready ? '运行中' : '未就绪');
   setText(elements.connectionHint, ready ? '串口、SIM、驻网和短信配置均已通过启动检查。' : '请检查启动日志和模组初始化状态。');
@@ -594,6 +650,38 @@ async function refreshMessages() {
   renderMessages(messages.data || []);
 }
 
+async function toggleMobileData() {
+  if (state.mobileDataBusy) {
+    return;
+  }
+
+  const action = elements.mobileDataToggle.dataset.action || 'disable';
+  const enabled = action === 'enable';
+
+  if (enabled && !window.confirm('开启移动数据可能产生流量费用，确定要开启吗？')) {
+    return;
+  }
+
+  state.mobileDataBusy = true;
+  elements.mobileDataToggle.disabled = true;
+  setStatusMessage(elements.mobileDataStatus, enabled ? '正在开启...' : '正在关闭...');
+
+  try {
+    const result = await requestJSON('/api/modem/mobile-data', {
+      method: 'POST',
+      body: JSON.stringify({ enabled })
+    });
+    renderMobileData(result.data || {});
+    setStatusMessage(elements.mobileDataStatus, result.message || (enabled ? '移动数据已开启。' : '移动数据已关闭。'), 'success');
+    await refreshLogs();
+  } catch (err) {
+    setStatusMessage(elements.mobileDataStatus, err.message, 'error');
+  } finally {
+    state.mobileDataBusy = false;
+    elements.mobileDataToggle.disabled = false;
+  }
+}
+
 async function refreshAll() {
   if (state.busy) {
     return;
@@ -607,6 +695,7 @@ async function refreshAll() {
     const status = await requestJSON('/api/status');
     const info = await requestJSON('/api/modem/info');
     renderStatus(status, info);
+    setStatusMessage(elements.mobileDataStatus, '');
     await refreshMessages();
     await refreshLogs();
   } catch (err) {
@@ -694,6 +783,7 @@ elements.pushChannelForm.addEventListener('submit', savePushChannels);
 elements.pushTestButton.addEventListener('click', testPushChannel);
 elements.pushChannelForm.elements.type.addEventListener('change', handlePushTypeChange);
 elements.refreshButton.addEventListener('click', refreshAll);
+elements.mobileDataToggle.addEventListener('click', toggleMobileData);
 elements.logsButton.addEventListener('click', refreshLogs);
 elements.messagesButton.addEventListener('click', refreshMessages);
 elements.smsForm.addEventListener('submit', sendSMS);
