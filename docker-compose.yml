@@ -1,0 +1,26 @@
+# Before starting:
+#   cp config.example.json config.json
+#   Keep serial.autoDetect enabled in config.json so the app can probe visible serial ports.
+services:
+  sms-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sms-forwarding:latest
+    container_name: sms-forwarding
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${SMS_GATEWAY_PORT:-3000}:3000"
+    volumes:
+      - ./config.json:/app/config.json
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - /dev:/dev
+      - /sys:/sys:ro
+    device_cgroup_rules:
+      - "c 188:* rwm"
+      - "c 166:* rwm"

@@ -1,5 +1,11 @@
 import { parse } from 'node-pdu';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import logger from './logger.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 class SMSProcessor {
   constructor(config, modem, concatManager, pushManager) {
@@ -9,7 +15,9 @@ class SMSProcessor {
     this.pushManager = pushManager;
     this.receivedMessages = [];
     this.receivedMessageSeq = 0;
-    this.maxReceivedMessages = 200;
+    this.maxReceivedMessages = this.resolveMaxReceivedMessages();
+    this.receivedMessagesFile = this.resolveReceivedMessagesFile();
+    this.loadReceivedMessages();
   }
 
   /**
@@ -110,6 +118,7 @@ class SMSProcessor {
       this.receivedMessages.length = this.maxReceivedMessages;
     }
 
+    this.persistReceivedMessages();
     logger.info(`短信已进入Web收件箱: ${sender}`);
     return message;
   }
@@ -121,6 +130,7 @@ class SMSProcessor {
     const message = this.receivedMessages.find(item => item.id === id);
     if (message) {
       Object.assign(message, patch);
+      this.persistReceivedMessages();
     }
   }
 
@@ -130,6 +140,107 @@ class SMSProcessor {
   getReceivedMessages(limit = 50) {
     const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), this.maxReceivedMessages);
     return this.receivedMessages.slice(0, safeLimit);
+  }
+
+  /**
+   * 解析收件箱保留条数。
+   */
+  resolveMaxReceivedMessages() {
+    const configured = Number(this.config.inbox?.maxReceivedMessages);
+    if (!Number.isFinite(configured) || configured <= 0) {
+      return 200;
+    }
+
+    return Math.min(Math.floor(configured), 5000);
+  }
+
+  /**
+   * 解析收件箱持久化文件路径。
+   */
+  resolveReceivedMessagesFile() {
+    const configuredPath = this.config.inbox?.receivedMessagesFile || 'data/received-messages.json';
+    if (path.isAbsolute(configuredPath)) {
+      return configuredPath;
+    }
+
+    return path.join(__dirname, '..', configuredPath);
+  }
+
+  /**
+   * 启动时加载持久化收件箱。
+   */
+  loadReceivedMessages() {
+    try {
+      fs.mkdirSync(path.dirname(this.receivedMessagesFile), { recursive: true });
+
+      if (!fs.existsSync(this.receivedMessagesFile)) {
+        logger.info(`短信收件箱持久化文件不存在，将在收到短信后创建: ${this.receivedMessagesFile}`);
+        return;
+      }
+
+      const content = fs.readFileSync(this.receivedMessagesFile, 'utf8').trim();
+      if (!content) {
+        return;
+      }
+
+      const parsed = JSON.parse(content);
+      if (!Array.isArray(parsed)) {
+        logger.warn('短信收件箱持久化文件格式不是数组，已忽略');
+        return;
+      }
+
+      this.receivedMessages = parsed
+        .map(item => this.normalizeStoredMessage(item))
+        .filter(Boolean)
+        .slice(0, this.maxReceivedMessages);
+
+      logger.info(`已加载持久化短信收件箱: ${this.receivedMessages.length} 条`);
+    } catch (err) {
+      logger.error('加载短信收件箱持久化文件失败:', err);
+      this.receivedMessages = [];
+    }
+  }
+
+  /**
+   * 保存当前收件箱到磁盘。
+   */
+  persistReceivedMessages() {
+    try {
+      fs.mkdirSync(path.dirname(this.receivedMessagesFile), { recursive: true });
+      const tmpFile = `${this.receivedMessagesFile}.${process.pid}.tmp`;
+      fs.writeFileSync(
+        tmpFile,
+        `${JSON.stringify(this.receivedMessages, null, 2)}\n`,
+        'utf8'
+      );
+      fs.renameSync(tmpFile, this.receivedMessagesFile);
+    } catch (err) {
+      logger.error('保存短信收件箱持久化文件失败:', err);
+    }
+  }
+
+  /**
+   * 规范化历史短信记录，避免坏数据影响Web展示。
+   */
+  normalizeStoredMessage(item) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return null;
+    }
+
+    const id = String(item.id || '').trim();
+    if (!id) {
+      return null;
+    }
+
+    return {
+      id,
+      sender: String(item.sender || '未知号码'),
+      text: String(item.text || ''),
+      timestamp: String(item.timestamp || item.receivedAt || new Date().toISOString()),
+      receivedAt: String(item.receivedAt || new Date().toISOString()),
+      status: String(item.status || 'received'),
+      statusText: String(item.statusText || '已接收')
+    };
   }
 
 }
