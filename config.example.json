@@ -2,6 +2,8 @@
   "serial": {
     "path": "COM3",
     "baudRate": 115200,
+    "autoDetect": true,
+    "probeTimeout": 1200,
     "_comment": "Windows使用COM1/COM2/COM3等，也可以直接写数字如3; Linux使用/dev/ttyUSB0"
   },
   "smtp": {

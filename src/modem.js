@@ -2,6 +2,8 @@ import { SerialPort } from 'serialport';
 import { ReadlineParser } from '@serialport/parser-readline';
 import { Submit } from 'node-pdu';
 import EventEmitter from 'events';
+import fs from 'fs';
+import path from 'path';
 import logger from './logger.js';
 
 class ModemManager extends EventEmitter {
@@ -23,13 +25,7 @@ class ModemManager extends EventEmitter {
    */
   async open() {
     try {
-      // 处理串口路径：Windows支持COMx格式
-      let portPath = this.config.path;
-
-      // 如果是Windows且指定了COM端口号（数字），自动添加COM前缀
-      if (process.platform === 'win32' && /^\d+$/.test(portPath)) {
-        portPath = `COM${portPath}`;
-      }
+      const portPath = await this.resolvePortPath();
 
       logger.info(`准备打开串口: ${portPath} (${this.config.baudRate})`);
 
@@ -39,7 +35,8 @@ class ModemManager extends EventEmitter {
         baudRate: this.config.baudRate,
         dataBits: 8,
         stopBits: 1,
-        parity: 'none'
+        parity: 'none',
+        autoOpen: false
       });
 
       // 设置行解析器
@@ -61,8 +58,18 @@ class ModemManager extends EventEmitter {
       this.setupURCListener();
 
       // 等待串口打开
-      await new Promise((resolve) => this.port.once('open', resolve));
-      logger.info(`串口已打开: ${this.config.path}`);
+      await new Promise((resolve, reject) => {
+        this.port.open((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+
+          resolve();
+        });
+      });
+      this.config.path = portPath;
+      logger.info(`串口已打开: ${portPath}`);
 
       // 初始化模组
       await this.init();
@@ -71,6 +78,282 @@ class ModemManager extends EventEmitter {
       logger.error('打开串口失败:', err);
       throw err;
     }
+  }
+
+  /**
+   * 自动探测能响应AT命令的串口；可通过 serial.autoDetect=false 关闭。
+   */
+  async resolvePortPath() {
+    const manualPath = this.normalizePortPath(this.config.path);
+
+    if (this.config.autoDetect === false) {
+      return manualPath;
+    }
+
+    const candidates = await this.getSerialProbeCandidates(manualPath);
+    if (candidates.length === 0) {
+      throw new Error('未发现可探测的串口设备');
+    }
+
+    logger.info(`开始自动探测AT串口: ${this.formatProbeCandidateList(candidates)}`);
+
+    const timeout = this.config.probeTimeout || 1200;
+    const failures = [];
+
+    for (const candidate of candidates) {
+      const result = await this.probeATPort(candidate.path, timeout);
+      if (result.ok) {
+        logger.info(`✓ 自动探测到AT串口: ${candidate.path}`);
+        return candidate.path;
+      }
+
+      failures.push(result);
+      logger.debug(`串口探测未通过: ${candidate.path} (${this.formatProbeFailure(result)})`);
+    }
+
+    const summary = failures
+      .slice(0, 8)
+      .map(item => `${item.path}: ${this.formatProbeFailure(item)}`)
+      .join('; ');
+
+    throw new Error(`未找到可响应AT的串口，已探测 ${failures.length} 个端口${summary ? ` (${summary})` : ''}`);
+  }
+
+  normalizePortPath(portPath) {
+    if (!portPath) {
+      return null;
+    }
+
+    const normalized = String(portPath).trim();
+    if (process.platform === 'win32' && /^\d+$/.test(normalized)) {
+      return `COM${normalized}`;
+    }
+
+    return normalized;
+  }
+
+  async getSerialProbeCandidates(manualPath) {
+    const candidates = new Map();
+
+    const addCandidate = (path, portInfo = {}, manual = false) => {
+      if (!path) {
+        return;
+      }
+
+      const candidate = candidates.get(path) || {
+        path,
+        portInfo: {},
+        manual: false
+      };
+
+      candidate.portInfo = { ...candidate.portInfo, ...portInfo };
+      candidate.manual = candidate.manual || manual;
+      candidate.metadata = this.getPortMetadata(path, candidate.portInfo);
+      candidate.priority = this.getProbeCandidatePriority(path, candidate.portInfo, candidate.manual, candidate.metadata);
+      candidates.set(path, candidate);
+    };
+
+    let ports = [];
+    try {
+      ports = await SerialPort.list();
+    } catch (err) {
+      logger.warn(`读取系统串口列表失败: ${err.message}`);
+    }
+
+    for (const portInfo of ports) {
+      addCandidate(this.normalizePortPath(portInfo.path), portInfo);
+    }
+
+    addCandidate(manualPath, {}, true);
+
+    return Array.from(candidates.values())
+      .sort((a, b) => a.priority - b.priority || a.path.localeCompare(b.path));
+  }
+
+  getProbeCandidatePriority(portPath, portInfo, manual, metadata) {
+    const interfaceName = (metadata.interfaceName || '').toLowerCase();
+    const interfaceNumber = metadata.interfaceNumber;
+
+    if (interfaceName.includes('at interface') || /\bat\b/.test(interfaceName)) {
+      return interfaceNumber === null ? 0 : interfaceNumber;
+    }
+
+    if (portInfo.vendorId === '2ecc' && portInfo.productId === '3012') {
+      // ML307A: if02/if03 are AT interfaces; if04 is Diag; if00/if01 are RNDIS.
+      if (interfaceNumber === 2 || interfaceNumber === 3) {
+        return interfaceNumber;
+      }
+
+      return 40 + (interfaceNumber ?? 9);
+    }
+
+    if (interfaceName.includes('diag')) {
+      return 40;
+    }
+
+    if (interfaceName.includes('rndis') || interfaceName.includes('network')) {
+      return 50;
+    }
+
+    if (portInfo.vendorId || portInfo.productId || /usb|acm/i.test(portPath)) {
+      return 20;
+    }
+
+    if (/^COM\d+$/i.test(portPath)) {
+      return 30;
+    }
+
+    if (manual) {
+      return 35;
+    }
+
+    return 80;
+  }
+
+  getPortMetadata(portPath, portInfo) {
+    const metadata = {
+      interfaceName: '',
+      interfaceNumber: this.parseUSBInterfaceNumber(portInfo.pnpId)
+    };
+
+    if (process.platform !== 'linux') {
+      return metadata;
+    }
+
+    const ttyName = this.getTTYName(portPath);
+    if (!ttyName) {
+      return metadata;
+    }
+
+    try {
+      const ttyDevicePath = fs.realpathSync(`/sys/class/tty/${ttyName}/device`);
+      const usbInterfacePath = path.dirname(ttyDevicePath);
+      metadata.interfaceName = this.readFirstLine(path.join(usbInterfacePath, 'interface')) || '';
+
+      const sysfsInterfaceNumber = this.readFirstLine(path.join(usbInterfacePath, 'bInterfaceNumber'));
+      if (sysfsInterfaceNumber) {
+        metadata.interfaceNumber = Number.parseInt(sysfsInterfaceNumber, 16);
+      }
+    } catch (err) {
+      // Some platforms expose serial ports without Linux USB sysfs metadata.
+    }
+
+    return metadata;
+  }
+
+  parseUSBInterfaceNumber(pnpId) {
+    const match = String(pnpId || '').match(/if(\d+)/i);
+    if (!match) {
+      return null;
+    }
+
+    return Number.parseInt(match[1], 10);
+  }
+
+  getTTYName(portPath) {
+    try {
+      return path.basename(fs.realpathSync(portPath));
+    } catch (err) {
+      return path.basename(portPath);
+    }
+  }
+
+  readFirstLine(filePath) {
+    try {
+      return fs.readFileSync(filePath, 'utf8').split('\n')[0].trim();
+    } catch (err) {
+      return '';
+    }
+  }
+
+  formatProbeCandidateList(candidates) {
+    const paths = candidates.map(item => item.path);
+    if (paths.length <= 12) {
+      return paths.join(', ');
+    }
+
+    return `${paths.slice(0, 12).join(', ')} ... 共${paths.length}个`;
+  }
+
+  async probeATPort(path, timeout = 1200) {
+    return new Promise((resolve) => {
+      let buffer = '';
+      let settled = false;
+
+      const port = new SerialPort({
+        path,
+        baudRate: this.config.baudRate,
+        dataBits: 8,
+        stopBits: 1,
+        parity: 'none',
+        autoOpen: false
+      });
+
+      const done = (result) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        clearTimeout(timer);
+        port.removeListener('data', onData);
+        port.removeListener('error', onError);
+
+        const finalResult = {
+          path,
+          ...result,
+          response: buffer
+        };
+
+        if (port.isOpen) {
+          port.close(() => resolve(finalResult));
+          return;
+        }
+
+        resolve(finalResult);
+      };
+
+      const onData = (data) => {
+        buffer += data.toString('utf8');
+        if (buffer.includes('OK')) {
+          done({ ok: true, reason: 'ok' });
+        } else if (buffer.includes('ERROR')) {
+          done({ ok: false, reason: 'error_response' });
+        }
+      };
+
+      const onError = (err) => {
+        done({ ok: false, reason: 'error', error: err.message });
+      };
+
+      const timer = setTimeout(() => {
+        done({ ok: false, reason: 'timeout' });
+      }, timeout);
+
+      port.on('data', onData);
+      port.on('error', onError);
+
+      port.open((err) => {
+        if (err) {
+          done({ ok: false, reason: 'open_error', error: err.message });
+          return;
+        }
+
+        port.write('AT\r\n', (writeErr) => {
+          if (writeErr) {
+            done({ ok: false, reason: 'write_error', error: writeErr.message });
+          }
+        });
+      });
+    });
+  }
+
+  formatProbeFailure(result) {
+    if (result.error) {
+      return `${result.reason}: ${result.error}`;
+    }
+
+    return result.reason;
   }
 
   /**
