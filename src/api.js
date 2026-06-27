@@ -496,9 +496,13 @@ class APIServer {
         }
 
         const mobileData = await this.modem.setMobileDataEnabled(req.body.enabled);
+        const message = mobileData.mode === 'mipcall'
+          ? (req.body.enabled ? '应用层拨号已开启' : '应用层拨号已断开')
+          : (req.body.enabled ? '移动数据已开启' : '移动数据已关闭');
+
         res.json({
           success: true,
-          message: req.body.enabled ? '移动数据已开启' : '移动数据已关闭',
+          message,
           data: mobileData
         });
       } catch (err) {

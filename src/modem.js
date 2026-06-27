@@ -544,19 +544,62 @@ class ModemManager extends EventEmitter {
 
   async disableMobileData(options = {}) {
     const mode = this.getMobileDataMode();
+    if (mode === 'mipcall') {
+      return await this.disableMipcallMobileData(options);
+    }
+
+    return await this.disableCgactMobileData(options);
+  }
+
+  async disableMipcallMobileData(options = {}) {
     const before = await this.getMobileDataStatus();
     const cids = this.getMobileDataTargetCids(before);
-    const label = mode === 'mipcall' ? '关闭移动数据拨号' : '停用PDP数据连接';
-    let commandSucceeded = false;
 
-    logger.info(`${options.reason || '手动操作'}: 关闭移动数据，避免流量消耗`);
+    logger.info(`${options.reason || '手动操作'}: 断开ML307应用层拨号连接，避免流量消耗`);
 
     for (const cid of cids) {
-      const command = this.getMobileDataCommand(mode, false, cid);
-      const resp = await this.sendATWithRetry(command, {
+      try {
+        await this.sendATWithRetry(this.getMobileDataCommand('mipcall', false, cid), {
+          timeout: 8000,
+          retries: 1,
+          label: `断开应用层拨号(CID ${cid})`,
+          required: true
+        });
+      } catch (err) {
+        err.mobileDataCritical = true;
+        throw err;
+      }
+    }
+
+    const status = await this.waitForMobileDataState(false, options.timeout || 8000);
+    if (status.anyActive) {
+      const err = new Error(`MIPCALL断开后仍检测到活动连接: ${this.formatMobileDataContexts(status.contexts)}`);
+      err.mobileDataCritical = true;
+      throw err;
+    }
+
+    if (status.status === 'unknown') {
+      logger.warn('MIPCALL断开命令已成功发送，但状态未确认');
+    }
+
+    await this.tryDeactivatePdpContexts(cids);
+
+    logger.info('✓ 应用层拨号连接已断开');
+    return status;
+  }
+
+  async disableCgactMobileData(options = {}) {
+    const before = await this.getMobileDataStatus();
+    const cids = this.getMobileDataTargetCids(before);
+    let commandSucceeded = false;
+
+    logger.info(`${options.reason || '手动操作'}: 停用PDP数据连接，避免流量消耗`);
+
+    for (const cid of cids) {
+      const resp = await this.sendATWithRetry(this.getMobileDataCommand('cgact', false, cid), {
         timeout: 8000,
         retries: 1,
-        label: `${label}(CID ${cid})`,
+        label: `停用PDP数据连接(CID ${cid})`,
         required: false
       });
 
@@ -592,6 +635,21 @@ class ModemManager extends EventEmitter {
     return status;
   }
 
+  async tryDeactivatePdpContexts(cids) {
+    for (const cid of cids) {
+      const resp = await this.sendATWithRetry(this.getMobileDataCommand('cgact', false, cid), {
+        timeout: 8000,
+        retries: 1,
+        label: `保护性停用PDP(CID ${cid})`,
+        required: false
+      });
+
+      if (!resp) {
+        logger.warn(`保护性停用PDP(CID ${cid})未成功，已按MIPCALL断开结果继续`);
+      }
+    }
+  }
+
   async forceMobileDataOff(stage) {
     this.mobileData.desiredEnabled = false;
     try {
@@ -601,6 +659,10 @@ class ModemManager extends EventEmitter {
         timeout: 5000
       });
     } catch (err) {
+      if (err.mobileDataCritical) {
+        throw err;
+      }
+
       logger.warn(`${stage}: 移动数据关闭未确认: ${err.message}`);
       return this.getCachedMobileDataStatus();
     }
@@ -792,7 +854,7 @@ class ModemManager extends EventEmitter {
     await this.waitSIMReady();
     await this.ensureFullFunctionality();
 
-    // 4. 启动保护：先关闭移动数据拨号，再等待短信所需的网络注册。
+    // 4. 启动保护：先断开应用层拨号，再等待短信所需的网络注册。
     await this.forceMobileDataOff('启动保护(CFUN=1后)');
 
     // 5. 等待网络注册
@@ -810,7 +872,7 @@ class ModemManager extends EventEmitter {
       this.ready = false;
     }
 
-    // 6. 驻网后再关一次，防止模组自动拨号在驻网完成后重新拉起。
+    // 6. 驻网后再断开一次，防止模组自动拨号在驻网完成后重新拉起。
     await this.forceMobileDataOff('启动保护(驻网后)');
 
     // 7. 按文档配置短信功能，并启用本项目需要的PDU模式

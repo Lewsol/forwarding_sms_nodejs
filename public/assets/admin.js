@@ -184,25 +184,26 @@ function renderMobileData(mobileData = {}) {
   const enabled = Boolean(mobileData.enabled || mobileData.anyActive);
   const cid = mobileData.cid || 1;
   const mode = formatMobileDataMode(mobileData.mode);
+  const isMipcall = mobileData.mode === 'mipcall';
   const activeContexts = formatMobileDataContexts(mobileData.contexts || []);
 
   if (unknown) {
     setText(elements.mobileDataSummary, '未知');
     setText(elements.mobileDataState, '状态未知');
-    setText(elements.mobileDataHint, mobileData.error || '未能确认移动数据状态，可先强制关闭。');
-    elements.mobileDataToggle.textContent = '强制关闭流量';
+    setText(elements.mobileDataHint, mobileData.error || (isMipcall ? '未能确认应用层拨号状态，可先强制断开。' : '未能确认移动数据状态，可先强制关闭。'));
+    elements.mobileDataToggle.textContent = isMipcall ? '强制断开拨号' : '强制关闭流量';
     elements.mobileDataToggle.dataset.action = 'disable';
   } else if (enabled) {
-    setText(elements.mobileDataSummary, '已开启');
-    setText(elements.mobileDataState, '流量已开启');
+    setText(elements.mobileDataSummary, isMipcall ? '已连接' : '已开启');
+    setText(elements.mobileDataState, isMipcall ? '应用拨号已连接' : '流量已开启');
     setText(elements.mobileDataHint, activeContexts ? `${mode} 检测到 ${activeContexts} 处于活动状态。` : `CID ${cid} 处于活动状态。`);
-    elements.mobileDataToggle.textContent = '关闭流量';
+    elements.mobileDataToggle.textContent = isMipcall ? '断开拨号' : '关闭流量';
     elements.mobileDataToggle.dataset.action = 'disable';
   } else {
-    setText(elements.mobileDataSummary, '已关闭');
-    setText(elements.mobileDataState, '流量已关闭');
-    setText(elements.mobileDataHint, `${mode} CID ${cid} 未建立移动数据连接，重启后也会先保持关闭。`);
-    elements.mobileDataToggle.textContent = '开启流量';
+    setText(elements.mobileDataSummary, isMipcall ? '已断开' : '已关闭');
+    setText(elements.mobileDataState, isMipcall ? '应用拨号已断开' : '流量已关闭');
+    setText(elements.mobileDataHint, isMipcall ? `${mode} CID ${cid} 未建立应用层拨号连接；已保护性尝试停用PDP。` : `${mode} CID ${cid} 未建立移动数据连接，重启后也会先保持关闭。`);
+    elements.mobileDataToggle.textContent = isMipcall ? '开启拨号' : '开启流量';
     elements.mobileDataToggle.dataset.action = 'enable';
   }
 
@@ -674,7 +675,7 @@ async function toggleMobileData() {
       body: JSON.stringify({ enabled })
     });
     renderMobileData(result.data || {});
-    setStatusMessage(elements.mobileDataStatus, result.message || (enabled ? '移动数据已开启。' : '移动数据已关闭。'), 'success');
+    setStatusMessage(elements.mobileDataStatus, result.message || (enabled ? '已开启。' : '已关闭。'), 'success');
     await refreshLogs();
   } catch (err) {
     setStatusMessage(elements.mobileDataStatus, err.message, 'error');
