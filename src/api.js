@@ -514,6 +514,32 @@ class APIServer {
       }
     });
 
+    // 通过模组执行一次MPING，消耗少量流量验证连通性
+    this.app.post('/api/modem/mobile-data/consume', async (req, res) => {
+      try {
+        const ping = await this.modem.consumeMobileDataTraffic({
+          target: req.body?.target || '8.8.8.8'
+        });
+        const mobileData = await this.modem.getMobileDataStatus();
+
+        res.json({
+          success: true,
+          message: '已消耗少量流量完成连通性测试',
+          data: {
+            ping,
+            mobileData
+          }
+        });
+      } catch (err) {
+        logger.error('流量消耗测试失败:', err);
+        res.status(err.statusCode || 500).json({
+          success: false,
+          error: err.message,
+          data: err.data || null
+        });
+      }
+    });
+
     // 发送AT命令
     this.app.post('/api/modem/at', async (req, res) => {
       try {

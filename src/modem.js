@@ -668,6 +668,150 @@ class ModemManager extends EventEmitter {
     }
   }
 
+  async consumeMobileDataTraffic(options = {}) {
+    const target = this.normalizePingTarget(options.target || '8.8.8.8');
+    const status = await this.getMobileDataStatus();
+
+    if (status.status === 'unknown') {
+      const err = new Error(status.error || '未能确认移动数据状态，无法执行流量消耗测试');
+      err.statusCode = 503;
+      throw err;
+    }
+
+    if (!status.anyActive) {
+      const err = new Error('当前未开启流量，请先开启后再执行流量消耗测试');
+      err.statusCode = 409;
+      throw err;
+    }
+
+    return await this.runMPing(target, {
+      timeout: options.timeout || 35000,
+      pingTimeoutSeconds: options.pingTimeoutSeconds || 30,
+      count: options.count || 1
+    });
+  }
+
+  normalizePingTarget(value) {
+    const target = String(value || '').trim();
+    if (!target || !/^[A-Za-z0-9.:-]{1,253}$/.test(target)) {
+      throw new Error('Ping目标地址无效');
+    }
+
+    return target;
+  }
+
+  runMPing(target, options = {}) {
+    if (!this.port || !this.port.isOpen) {
+      throw new Error('串口未打开');
+    }
+
+    const timeout = options.timeout || 35000;
+    const pingTimeoutSeconds = Math.min(Math.max(Number(options.pingTimeoutSeconds) || 30, 1), 255);
+    const count = Math.min(Math.max(Number(options.count) || 1, 1), 10);
+    const command = `AT+MPING="${target}",${pingTimeoutSeconds},${count}`;
+
+    logger.info(`准备通过模组执行MPING，目标: ${target}`);
+
+    return new Promise((resolve, reject) => {
+      const lines = [];
+      let settled = false;
+      let commandAccepted = false;
+
+      const finish = (err, result = null) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        clearTimeout(timer);
+        this.parser.removeListener('data', handler);
+
+        if (err) {
+          reject(err);
+        } else {
+          resolve(result);
+        }
+      };
+
+      const timer = setTimeout(() => {
+        finish(new Error(`MPING超时，未收到结果: ${target}`));
+      }, timeout);
+
+      const handler = (line) => {
+        const trimmed = String(line).trim();
+        if (!trimmed) {
+          return;
+        }
+
+        lines.push(trimmed);
+
+        if (trimmed === 'OK') {
+          commandAccepted = true;
+          return;
+        }
+
+        if (trimmed.includes('ERROR')) {
+          finish(new Error(`MPING命令失败: ${this.formatATResponse(lines.join('\n'))}`));
+          return;
+        }
+
+        if (trimmed.startsWith('+MPING:')) {
+          const result = this.parseMPingResult(trimmed, target);
+          result.commandAccepted = commandAccepted;
+          result.rawResponse = lines.join('\n');
+
+          if (result.success) {
+            logger.info(`✓ ${result.message}`);
+            finish(null, result);
+          } else {
+            const err = new Error(result.message);
+            err.statusCode = 502;
+            err.data = result;
+            finish(err);
+          }
+        }
+      };
+
+      this.parser.on('data', handler);
+
+      logger.debug(`>> ${command}`);
+      this.port.write(`${command}\r\n`, (err) => {
+        if (err) {
+          finish(err);
+        }
+      });
+    });
+  }
+
+  parseMPingResult(line, target) {
+    const payload = line.slice('+MPING:'.length).trim();
+    const params = payload.match(/"[^"]*"|[^,]+/g)?.map(item => {
+      const value = item.trim();
+      return value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
+    }) || [];
+    const resultCode = Number.parseInt(params[0], 10);
+    const responseTarget = params[1] || target;
+    const packetLength = Number.parseInt(params[2], 10);
+    const latencyMs = Number.parseInt(params[3], 10);
+    const ttl = Number.parseInt(params[4], 10);
+    const hasReplyFields = params.length >= 4;
+    const success = (resultCode === 0 || resultCode === 1) && hasReplyFields;
+    const message = success
+      ? `MPING成功: ${responseTarget}, 延迟 ${Number.isFinite(latencyMs) ? `${latencyMs}ms` : '未知'}, TTL ${Number.isFinite(ttl) ? ttl : '未知'}`
+      : `MPING失败或目标不可达，错误码: ${Number.isFinite(resultCode) ? resultCode : payload}`;
+
+    return {
+      success,
+      target: responseTarget,
+      resultCode: Number.isFinite(resultCode) ? resultCode : null,
+      packetLength: Number.isFinite(packetLength) ? packetLength : null,
+      latencyMs: Number.isFinite(latencyMs) ? latencyMs : null,
+      ttl: Number.isFinite(ttl) ? ttl : null,
+      message,
+      rawLine: line
+    };
+  }
+
   async waitForMobileDataState(enabled, timeout = 10000) {
     const startedAt = Date.now();
     let status = await this.getMobileDataStatus();

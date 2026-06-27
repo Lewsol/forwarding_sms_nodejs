@@ -1,6 +1,8 @@
 const state = {
   busy: false,
   mobileDataBusy: false,
+  trafficBusy: false,
+  currentMobileData: null,
   pushChannels: [],
   selectedPushChannel: -1,
   pushLoaded: false
@@ -39,6 +41,8 @@ const elements = {
   mobileDataState: document.querySelector('#mobileDataState'),
   mobileDataHint: document.querySelector('#mobileDataHint'),
   mobileDataToggle: document.querySelector('#mobileDataToggle'),
+  mobileDataConsume: document.querySelector('#mobileDataConsume'),
+  mobileDataTrafficHint: document.querySelector('#mobileDataTrafficHint'),
   mobileDataStatus: document.querySelector('#mobileDataStatus'),
   moduleModel: document.querySelector('#moduleModel'),
   moduleVersion: document.querySelector('#moduleVersion'),
@@ -180,6 +184,7 @@ function formatMobileDataContexts(contexts = []) {
 }
 
 function renderMobileData(mobileData = {}) {
+  state.currentMobileData = mobileData;
   const unknown = mobileData.status === 'unknown';
   const enabled = Boolean(mobileData.enabled || mobileData.anyActive);
   const cid = mobileData.cid || 1;
@@ -193,21 +198,30 @@ function renderMobileData(mobileData = {}) {
     setText(elements.mobileDataHint, mobileData.error || (isMipcall ? '未能确认应用层拨号状态，可先强制断开。' : '未能确认移动数据状态，可先强制关闭。'));
     elements.mobileDataToggle.textContent = isMipcall ? '强制断开拨号' : '强制关闭流量';
     elements.mobileDataToggle.dataset.action = 'disable';
+    elements.mobileDataConsume.classList.add('is-hidden');
+    elements.mobileDataTrafficHint.classList.remove('is-hidden');
+    elements.mobileDataTrafficHint.textContent = '状态确认后，开启流量才会显示消耗流量按钮。';
   } else if (enabled) {
     setText(elements.mobileDataSummary, isMipcall ? '已连接' : '已开启');
     setText(elements.mobileDataState, isMipcall ? '应用拨号已连接' : '流量已开启');
     setText(elements.mobileDataHint, activeContexts ? `${mode} 检测到 ${activeContexts} 处于活动状态。` : `CID ${cid} 处于活动状态。`);
     elements.mobileDataToggle.textContent = isMipcall ? '断开拨号' : '关闭流量';
     elements.mobileDataToggle.dataset.action = 'disable';
+    elements.mobileDataConsume.classList.remove('is-hidden');
+    elements.mobileDataTrafficHint.classList.add('is-hidden');
   } else {
     setText(elements.mobileDataSummary, isMipcall ? '已断开' : '已关闭');
     setText(elements.mobileDataState, isMipcall ? '应用拨号已断开' : '流量已关闭');
     setText(elements.mobileDataHint, isMipcall ? `${mode} CID ${cid} 未建立应用层拨号连接；已保护性尝试停用PDP。` : `${mode} CID ${cid} 未建立移动数据连接，重启后也会先保持关闭。`);
     elements.mobileDataToggle.textContent = isMipcall ? '开启拨号' : '开启流量';
     elements.mobileDataToggle.dataset.action = 'enable';
+    elements.mobileDataConsume.classList.add('is-hidden');
+    elements.mobileDataTrafficHint.classList.remove('is-hidden');
+    elements.mobileDataTrafficHint.textContent = isMipcall ? '先开启拨号后，才可以执行一次MPING消耗少量流量。' : '先开启流量后，才可以执行一次MPING消耗少量流量。';
   }
 
   elements.mobileDataToggle.disabled = state.mobileDataBusy;
+  elements.mobileDataConsume.disabled = state.mobileDataBusy || state.trafficBusy || !enabled;
 }
 
 function renderStatus(status, info) {
@@ -681,7 +695,34 @@ async function toggleMobileData() {
     setStatusMessage(elements.mobileDataStatus, err.message, 'error');
   } finally {
     state.mobileDataBusy = false;
-    elements.mobileDataToggle.disabled = false;
+    renderMobileData(state.currentMobileData || {});
+  }
+}
+
+async function consumeMobileDataTraffic() {
+  if (state.mobileDataBusy || state.trafficBusy) {
+    return;
+  }
+
+  state.trafficBusy = true;
+  elements.mobileDataToggle.disabled = true;
+  elements.mobileDataConsume.disabled = true;
+  setStatusMessage(elements.mobileDataStatus, '正在执行MPING，会消耗少量流量...');
+
+  try {
+    const result = await requestJSON('/api/modem/mobile-data/consume', {
+      method: 'POST',
+      body: JSON.stringify({ target: '8.8.8.8' })
+    });
+    renderMobileData(result.data?.mobileData || state.currentMobileData || {});
+    const pingMessage = result.data?.ping?.message || result.message || '已完成流量消耗测试。';
+    setStatusMessage(elements.mobileDataStatus, pingMessage, 'success');
+    await refreshLogs();
+  } catch (err) {
+    setStatusMessage(elements.mobileDataStatus, err.message, 'error');
+  } finally {
+    state.trafficBusy = false;
+    renderMobileData(state.currentMobileData || {});
   }
 }
 
@@ -787,6 +828,7 @@ elements.pushTestButton.addEventListener('click', testPushChannel);
 elements.pushChannelForm.elements.type.addEventListener('change', handlePushTypeChange);
 elements.refreshButton.addEventListener('click', refreshAll);
 elements.mobileDataToggle.addEventListener('click', toggleMobileData);
+elements.mobileDataConsume.addEventListener('click', consumeMobileDataTraffic);
 elements.logsButton.addEventListener('click', refreshLogs);
 elements.messagesButton.addEventListener('click', refreshMessages);
 elements.smsForm.addEventListener('submit', sendSMS);
