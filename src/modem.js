@@ -1316,30 +1316,58 @@ class ModemManager extends EventEmitter {
       return this.iccid;
     }
 
-    try {
-      const resp = await this.sendATCommand('AT+CCID', 2000);
-      const match = resp.match(/\+CCID:\s*(\d+)/);
-      if (match) {
-        const previousICCID = this.iccid;
-        this.iccid = match[1];
-        this.iccidCheckedAt = new Date().toISOString();
-        if (previousICCID !== this.iccid) {
-          logger.info(`✓ 当前SIM ICCID: ${this.formatICCID(this.iccid)}`);
+    const commands = ['AT+ICCID', 'AT+CCID', 'AT+QCCID'];
+
+    for (const command of commands) {
+      try {
+        const resp = await this.sendATCommand(command, 2000);
+        const iccid = this.parseICCIDResponse(resp);
+
+        if (iccid) {
+          const previousICCID = this.iccid;
+          this.iccid = iccid;
+          this.iccidCheckedAt = new Date().toISOString();
+          if (previousICCID !== this.iccid) {
+            logger.info(`✓ 当前SIM ICCID: ${this.formatICCID(this.iccid)}`);
+          }
+          return this.iccid;
         }
-        return this.iccid;
+
+        logger.debug(`${command}未返回可识别ICCID: ${this.formatATResponse(resp)}`);
+      } catch (err) {
+        logger.debug(`${command}查询ICCID失败: ${err.message}`);
+      }
+    }
+
+    this.iccid = null;
+    this.iccidCheckedAt = new Date().toISOString();
+    logger.warn('查询ICCID失败: 模组未返回可识别ICCID');
+    return null;
+  }
+
+  parseICCIDResponse(resp) {
+    const lines = String(resp || '')
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean);
+
+    for (const line of lines) {
+      if (/^AT/i.test(line) || line === 'OK' || line === 'ERROR') {
+        continue;
       }
 
-      this.iccid = null;
-      this.iccidCheckedAt = new Date().toISOString();
-      return null;
-    } catch (err) {
-      if (options.refresh) {
-        this.iccid = null;
-        this.iccidCheckedAt = new Date().toISOString();
+      const prefixed = line.match(/^\+(?:ICCID|CCID|QCCID):\s*"?([0-9]{18,22})"?/i);
+      if (prefixed) {
+        return prefixed[1];
       }
-      logger.error('查询ICCID失败:', err);
-      return null;
+
+      const plain = line.match(/^"?([0-9]{18,22})"?$/);
+      if (plain) {
+        return plain[1];
+      }
     }
+
+    return null;
   }
 
   formatICCID(iccid) {
