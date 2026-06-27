@@ -109,10 +109,12 @@ const PUSH_TYPE_META = {
 };
 
 function setText(node, value) {
+  if (!node) return;
   node.textContent = value || '--';
 }
 
 function setStatusMessage(node, message, type = '') {
+  if (!node) return;
   node.textContent = message;
   node.classList.toggle('is-success', type === 'success');
   node.classList.toggle('is-error', type === 'error');
@@ -752,18 +754,18 @@ async function runATCommand(event) {
 
   submit.disabled = true;
   setText(elements.consoleState, 'running');
-  elements.atOutput.textContent = `> ${command}\n等待响应...`;
+  elements.atOutput.textContent = `› ${command}\n等待响应...`;
 
   try {
     const result = await requestJSON('/api/modem/at', {
       method: 'POST',
       body: JSON.stringify({ command })
     });
-    elements.atOutput.textContent = `> ${command}\n${result.data.response || ''}`.trim();
+    elements.atOutput.textContent = `› ${command}\n${result.data.response || ''}`.trim();
     setText(elements.consoleState, 'done');
     await refreshLogs();
   } catch (err) {
-    elements.atOutput.textContent = `> ${command}\nERROR: ${err.message}`;
+    elements.atOutput.textContent = `› ${command}\nERROR: ${err.message}`;
     setText(elements.consoleState, 'error');
   } finally {
     submit.disabled = false;
@@ -788,6 +790,19 @@ elements.logsButton.addEventListener('click', refreshLogs);
 elements.messagesButton.addEventListener('click', refreshMessages);
 elements.smsForm.addEventListener('submit', sendSMS);
 elements.atForm.addEventListener('submit', runATCommand);
+
+const ctaPushButton = document.querySelector('#ctaPushButton');
+const ctaRefreshButton = document.querySelector('#ctaRefreshButton');
+const footerPushLink = document.querySelector('#footerPushLink');
+const footerYear = document.querySelector('#footerYear');
+
+if (ctaPushButton) ctaPushButton.addEventListener('click', openPushModal);
+if (ctaRefreshButton) ctaRefreshButton.addEventListener('click', refreshAll);
+if (footerPushLink) footerPushLink.addEventListener('click', (event) => {
+  event.preventDefault();
+  openPushModal();
+});
+if (footerYear) footerYear.textContent = String(new Date().getFullYear());
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && elements.pushModal.classList.contains('is-open')) {
     closePushModal();

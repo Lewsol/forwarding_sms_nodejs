@@ -1,20 +1,29 @@
 <!doctype html>
 <html lang="zh-CN">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SMS Gateway 管理台</title>
+  <title>SMS Gateway · 管理台</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400;1,500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="/assets/admin.css">
 </head>
+
 <body>
   <header class="top-nav">
     <div class="top-nav__inner">
       <a class="brand" href="/admin" aria-label="SMS Gateway 管理台">
-        <span class="brand__mark" aria-hidden="true">✣</span>
-        <span>SMS Gateway</span>
+        <svg class="brand__mark" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 1v22M1 12h22M3.5 3.5l17 17M20.5 3.5l-17 17" stroke="currentColor" stroke-width="2.4"
+            stroke-linecap="round" fill="none" />
+        </svg>
+        <span class="brand__name">SMS Gateway</span>
       </a>
       <nav class="nav-links" aria-label="管理导航">
-        <a href="#status">状态</a>
+        <a href="#dashboard">状态</a>
         <a href="#inbox">收件箱</a>
         <a href="#send">短信</a>
         <a href="#console">AT 控制台</a>
@@ -22,104 +31,139 @@
       </nav>
       <div class="top-nav__actions">
         <button class="button button--secondary" id="pushSettingsButton" type="button">推送渠道</button>
-        <button class="button button--secondary" id="refreshButton" type="button">刷新状态</button>
       </div>
     </div>
   </header>
 
   <main>
+    <!-- ============ HERO ============ -->
     <section class="hero-band" id="status">
       <div class="container hero-grid">
         <div class="hero-copy">
-          <span class="badge badge--coral" id="readyBadge">连接检测中</span>
-          <h1>短信网关管理台</h1>
-          <p>集中查看 ML307A 模组状态、发送短信、执行 AT 命令，并检查运行日志。</p>
+          <span class="eyebrow eyebrow--coral">
+            <span class="eyebrow__dot" aria-hidden="true"></span>
+            <span id="readyBadge">连接检测中</span>
+          </span>
+          <h1>短信<em>网关</em><br>管理台</h1>
+          <p class="lede">集中查看 ML307A 模组状态、收发短信、执行 AT 命令、检查运行日志。</p>
+          <div class="hero-actions">
+            <a class="text-link" href="#send">发送短信</a>
+            <span class="hero-divider" aria-hidden="true">·</span>
+            <a class="text-link" href="#console">查看 AT 控制台</a>
+          </div>
         </div>
 
-        <div class="product-panel" aria-label="运行摘要">
-          <div class="panel-header">
-            <span>runtime</span>
-            <strong id="panelStatus">loading</strong>
+        <aside class="runtime-card" aria-label="运行摘要">
+          <header class="runtime-card__header">
+            <span class="runtime-card__label">
+              <svg class="spike spike--coral" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 1v22M1 12h22M3.5 3.5l17 17M20.5 3.5l-17 17" stroke="currentColor" stroke-width="2.4"
+                  stroke-linecap="round" fill="none" />
+              </svg>
+              runtime
+            </span>
+            <span class="runtime-card__status">
+              <span class="status-dot" id="panelStatusDot" aria-hidden="true"></span>
+              <strong id="panelStatus">loading</strong>
+            </span>
+          </header>
+          <div class="runtime-card__hero">
+            <span class="runtime-card__caption">uptime</span>
+            <span class="runtime-card__value" id="uptime">--</span>
           </div>
-          <dl class="runtime-list">
+          <dl class="runtime-card__meta">
             <div>
-              <dt>模组</dt>
-              <dd id="modelName">--</dd>
-            </div>
-            <div>
-              <dt>运营商</dt>
+              <dt>operator</dt>
               <dd id="operator">--</dd>
             </div>
             <div>
-              <dt>信号</dt>
+              <dt>signal</dt>
               <dd id="signalQuality">--</dd>
             </div>
-            <div>
-              <dt>移动数据</dt>
-              <dd id="mobileDataSummary">--</dd>
-            </div>
-            <div>
-              <dt>运行时长</dt>
-              <dd id="uptime">--</dd>
-            </div>
           </dl>
-        </div>
+        </aside>
       </div>
     </section>
 
-    <section class="section-band section-band--soft">
+    <!-- ============ STATUS BENTO ============ -->
+    <section class="section-band section-band--soft" id="dashboard">
       <div class="container">
         <div class="section-heading">
-          <h2>当前状态</h2>
-          <p>这些数据来自模组实时 AT 查询，刷新时会串行读取，避免同时发送多条 AT 命令。</p>
+          <div>
+            <span class="eyebrow eyebrow--spike">
+              <svg class="spike spike--coral" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 1v22M1 12h22M3.5 3.5l17 17M20.5 3.5l-17 17" stroke="currentColor" stroke-width="2.4"
+                  stroke-linecap="round" fill="none" />
+              </svg>
+              status board
+            </span>
+            <h2>当前<em>状态</em></h2>
+          </div>
+          <button class="button button--primary" id="refreshButton" type="button">刷新状态</button>
         </div>
-        <div class="status-grid">
-          <article class="feature-card">
-            <span class="eyebrow">connection</span>
+
+        <div class="bento-grid">
+          <article class="bento-hero">
+            <span class="eyebrow eyebrow--coral">
+              <span class="eyebrow__dot" aria-hidden="true"></span>
+              connection
+            </span>
             <h3 id="connectionState">--</h3>
             <p id="connectionHint">等待状态刷新。</p>
           </article>
-          <article class="feature-card">
-            <span class="eyebrow">signal</span>
-            <h3 id="signalValue">--</h3>
-            <p id="signalHint">RSSI 与误码率将在刷新后显示。</p>
-          </article>
-          <article class="feature-card feature-card--control">
+
+          <article class="bento-control">
             <span class="eyebrow">mobile data</span>
             <h3 id="mobileDataState">--</h3>
             <p id="mobileDataHint">启动时会自动关闭移动数据。</p>
-            <div class="feature-card__actions">
-              <button class="button button--secondary button--compact" id="mobileDataToggle" type="button" data-action="disable">强制关闭流量</button>
+            <div class="bento-control__actions">
+              <button class="button button--secondary button--compact" id="mobileDataToggle" type="button"
+                data-action="disable">强制关闭流量</button>
+              <p class="form-status mobile-data-status" id="mobileDataStatus" role="status"></p>
             </div>
-            <p class="form-status mobile-data-status" id="mobileDataStatus" role="status"></p>
           </article>
-          <article class="feature-card">
+        </div>
+
+        <div class="stat-strip">
+          <article class="stat-tile">
+            <span class="eyebrow">signal</span>
+            <span class="stat-tile__value" id="signalValue">--</span>
+            <span class="stat-tile__hint" id="signalHint">RSSI 与误码率将在刷新后显示。</span>
+          </article>
+          <article class="stat-tile">
             <span class="eyebrow">module</span>
-            <h3 id="moduleModel">--</h3>
-            <p id="moduleVersion">--</p>
+            <span class="stat-tile__value" id="moduleModel">--</span>
+            <span class="stat-tile__hint" id="moduleVersion">--</span>
           </article>
-          <article class="feature-card">
-            <span class="eyebrow">sim</span>
-            <h3 id="iccid">--</h3>
-            <p>ICCID 查询来自当前串口模组。</p>
+          <article class="stat-tile">
+            <span class="eyebrow">sim · iccid</span>
+            <span class="stat-tile__value stat-tile__value--mono" id="iccid">--</span>
+            <span class="stat-tile__hint">ICCID 查询来自当前串口模组。</span>
           </article>
         </div>
       </div>
     </section>
 
-    <section class="section-band">
-      <div class="container" id="inbox">
+    <!-- ============ INBOX ============ -->
+    <section class="section-band" id="inbox">
+      <div class="container">
         <div class="section-heading">
           <div>
-            <span class="badge badge--soft">inbox</span>
-            <h2>收到的短信</h2>
+            <span class="eyebrow eyebrow--spike">
+              <svg class="spike spike--coral" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 1v22M1 12h22M3.5 3.5l17 17M20.5 3.5l-17 17" stroke="currentColor" stroke-width="2.4"
+                  stroke-linecap="round" fill="none" />
+              </svg>
+              inbox
+            </span>
+            <h2>收到的<em>短信</em></h2>
           </div>
           <button class="button button--secondary" id="messagesButton" type="button">刷新短信</button>
         </div>
         <div class="inbox-panel">
           <div class="inbox-meta">
             <span id="messageCount">最近 0 条</span>
-            <span>新短信会自动出现在这里</span>
+            <span class="inbox-meta__hint">新短信会自动出现在这里</span>
           </div>
           <div class="message-list" id="messageList" aria-live="polite">
             <p class="empty-state empty-state--light">暂无收到的短信。</p>
@@ -128,21 +172,30 @@
       </div>
     </section>
 
+    <!-- ============ WORKBENCH ============ -->
     <section class="section-band section-band--soft">
       <div class="container workbench-grid">
         <section class="form-card" id="send">
           <div class="section-heading section-heading--compact">
-            <h2>发送短信</h2>
-            <p>使用当前 PDU 模式发送短信，提交后等待模组返回发送结果。</p>
+            <span class="eyebrow eyebrow--spike">
+              <svg class="spike spike--coral" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 1v22M1 12h22M3.5 3.5l17 17M20.5 3.5l-17 17" stroke="currentColor" stroke-width="2.4"
+                  stroke-linecap="round" fill="none" />
+              </svg>
+              compose
+            </span>
+            <h2>发送<em>短信</em></h2>
+            <p>PDU 模式发送，提交后等待模组返回结果。</p>
           </div>
           <form id="smsForm" class="stack-form">
-            <label>
-              <span>目标号码</span>
+            <label class="field">
+              <span class="field__label">目标号码</span>
               <input class="text-input" type="tel" name="phone" autocomplete="tel" placeholder="13800138000" required>
             </label>
-            <label>
-              <span>短信内容</span>
-              <textarea class="text-input text-area" name="message" rows="6" placeholder="输入要发送的短信内容" required></textarea>
+            <label class="field">
+              <span class="field__label">短信内容</span>
+              <textarea class="text-input text-area" name="message" rows="6" placeholder="输入要发送的短信内容"
+                required></textarea>
             </label>
             <div class="form-actions">
               <button class="button button--primary" type="submit">发送短信</button>
@@ -152,27 +205,44 @@
         </section>
 
         <section class="console-card" id="console">
-          <div class="panel-header">
-            <span>AT console</span>
-            <strong id="consoleState">idle</strong>
-          </div>
+          <header class="panel-header">
+            <span class="panel-header__label">
+              <svg class="spike spike--coral" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 1v22M1 12h22M3.5 3.5l17 17M20.5 3.5l-17 17" stroke="currentColor" stroke-width="2.4"
+                  stroke-linecap="round" fill="none" />
+              </svg>
+              at console
+            </span>
+            <span class="panel-header__status">
+              <span class="status-dot status-dot--amber" aria-hidden="true"></span>
+              <strong id="consoleState">idle</strong>
+            </span>
+          </header>
           <form id="atForm" class="at-form">
-            <input class="text-input text-input--dark" name="command" value="AT+CSQ" autocomplete="off" spellcheck="false" required>
-            <button class="button button--secondary-on-dark" type="submit">执行</button>
+            <input class="text-input text-input--mono" name="command" value="AT+CSQ" autocomplete="off"
+              spellcheck="false" required>
+            <button class="button button--primary" type="submit">执行</button>
           </form>
-          <pre class="console-output" id="atOutput">等待命令...</pre>
+          <pre class="console-output" id="atOutput">› 等待命令...</pre>
         </section>
       </div>
     </section>
 
-    <section class="section-band section-band--dark" id="logs">
+    <!-- ============ LOGS ============ -->
+    <section class="section-band" id="logs">
       <div class="container">
-        <div class="dark-heading">
+        <div class="section-heading">
           <div>
-            <span class="badge badge--dark">logs</span>
-            <h2>运行日志</h2>
+            <span class="eyebrow eyebrow--spike">
+              <svg class="spike spike--coral" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 1v22M1 12h22M3.5 3.5l17 17M20.5 3.5l-17 17" stroke="currentColor" stroke-width="2.4"
+                  stroke-linecap="round" fill="none" />
+              </svg>
+              logs
+            </span>
+            <h2>运行<em>日志</em></h2>
           </div>
-          <button class="button button--secondary-on-dark" id="logsButton" type="button">刷新日志</button>
+          <button class="button button--secondary" id="logsButton" type="button">刷新日志</button>
         </div>
         <div class="log-window" id="logWindow" aria-live="polite">
           <p class="empty-state">等待日志加载。</p>
@@ -181,21 +251,32 @@
     </section>
   </main>
 
+  <!-- ============ PUSH MODAL ============ -->
   <div class="modal" id="pushModal" aria-hidden="true">
     <div class="modal__backdrop" data-close-push-modal></div>
     <section class="modal__dialog" role="dialog" aria-modal="true" aria-labelledby="pushModalTitle">
-      <div class="modal__header">
+      <header class="modal__header">
         <div>
-          <span class="badge badge--soft">push</span>
-          <h2 id="pushModalTitle">推送渠道设置</h2>
+          <span class="eyebrow eyebrow--spike">
+            <svg class="spike spike--coral" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 1v22M1 12h22M3.5 3.5l17 17M20.5 3.5l-17 17" stroke="currentColor" stroke-width="2.4"
+                stroke-linecap="round" fill="none" />
+            </svg>
+            push channels
+          </span>
+          <h2 id="pushModalTitle">推送渠道<em>设置</em></h2>
         </div>
-        <button class="icon-button" id="pushModalClose" type="button" aria-label="关闭推送渠道设置">×</button>
-      </div>
+        <button class="icon-button" id="pushModalClose" type="button" aria-label="关闭推送渠道设置">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          </svg>
+        </button>
+      </header>
 
       <div class="push-settings">
         <aside class="channel-list-panel" aria-label="推送渠道列表">
           <div class="panel-header panel-header--light">
-            <span>channels</span>
+            <span class="panel-header__label">channels</span>
             <div class="channel-add">
               <select class="text-input select-input channel-add__select" id="pushAddTypeSelect" aria-label="新增推送类型">
                 <option value="dingtalk">钉钉机器人</option>
@@ -222,13 +303,13 @@
                 <span>启用通道</span>
               </label>
 
-              <label>
-                <span>通道名称</span>
+              <label class="field">
+                <span class="field__label">通道名称</span>
                 <input class="text-input" type="text" name="name" maxlength="80" placeholder="钉钉通知">
               </label>
 
-              <label>
-                <span>推送类型</span>
+              <label class="field">
+                <span class="field__label">推送类型</span>
                 <select class="text-input select-input" name="type">
                   <option value="dingtalk">钉钉机器人</option>
                   <option value="feishu">飞书机器人</option>
@@ -242,29 +323,30 @@
                 </select>
               </label>
 
-              <label class="field-row field-row--wide" data-push-field="url">
-                <span id="pushUrlLabel">Webhook URL</span>
+              <label class="field field-row field-row--wide" data-push-field="url">
+                <span class="field__label" id="pushUrlLabel">Webhook URL</span>
                 <input class="text-input" type="text" name="url" autocomplete="off">
               </label>
 
-              <label class="field-row field-row--wide" data-push-field="secret">
-                <span id="pushSecretLabel">加签密钥</span>
+              <label class="field field-row field-row--wide" data-push-field="secret">
+                <span class="field__label" id="pushSecretLabel">加签密钥</span>
                 <input class="text-input" type="password" name="secret" autocomplete="new-password">
               </label>
 
-              <label class="field-row" data-push-field="key1">
-                <span id="pushKey1Label">Key1</span>
+              <label class="field field-row" data-push-field="key1">
+                <span class="field__label" id="pushKey1Label">Key1</span>
                 <input class="text-input" type="text" name="key1" autocomplete="off">
               </label>
 
-              <label class="field-row" data-push-field="key2">
-                <span id="pushKey2Label">Key2</span>
+              <label class="field field-row" data-push-field="key2">
+                <span class="field__label" id="pushKey2Label">Key2</span>
                 <input class="text-input" type="text" name="key2" autocomplete="off">
               </label>
 
-              <label class="field-row field-row--wide" data-push-field="customBody">
-                <span>自定义请求体 JSON</span>
-                <textarea class="text-input text-area text-area--code" name="customBody" rows="7" spellcheck="false"></textarea>
+              <label class="field field-row field-row--wide" data-push-field="customBody">
+                <span class="field__label">自定义请求体 JSON</span>
+                <textarea class="text-input text-area text-area--code" name="customBody" rows="7"
+                  spellcheck="false"></textarea>
               </label>
             </div>
           </fieldset>
@@ -282,11 +364,19 @@
 
   <footer class="footer">
     <div class="container footer__inner">
-      <span class="brand brand--footer"><span class="brand__mark" aria-hidden="true">✣</span> SMS Gateway</span>
-      <span>Basic Auth protected management surface</span>
+      <span class="brand brand--footer">
+        <svg class="brand__mark" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 1v22M1 12h22M3.5 3.5l17 17M20.5 3.5l-17 17" stroke="currentColor" stroke-width="2.4"
+            stroke-linecap="round" fill="none" />
+        </svg>
+        <span>SMS Gateway</span>
+      </span>
+      <span class="footer__meta">© <span id="footerYear">2026</span> · Basic Auth protected · Built on Node.js +
+        ML307A</span>
     </div>
   </footer>
 
   <script src="/assets/admin.js" type="module"></script>
 </body>
+
 </html>
