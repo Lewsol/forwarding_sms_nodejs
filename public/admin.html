@@ -144,7 +144,6 @@
                 <span class="sim-slot__state" id="simSlot0State">--</span>
               </div>
               <span class="sim-slot__phone" id="simSlot0Phone">--</span>
-              <button class="button button--secondary button--compact" type="button" data-sim-switch="0">切到SIM1</button>
             </article>
 
             <article class="sim-slot" id="simSlot1">
@@ -153,7 +152,6 @@
                 <span class="sim-slot__state" id="simSlot1State">--</span>
               </div>
               <span class="sim-slot__phone" id="simSlot1Phone">--</span>
-              <button class="button button--secondary button--compact" type="button" data-sim-switch="1">切到SIM2</button>
             </article>
           </div>
         </div>
@@ -227,6 +225,10 @@
             <span>当前发送SIM</span>
             <strong id="sendSimLabel">--</strong>
           </p>
+          <div class="send-sim-picker" aria-label="选择发送SIM">
+            <button class="button button--secondary button--compact" type="button" data-sim-switch="0">SIM1</button>
+            <button class="button button--secondary button--compact" type="button" data-sim-switch="1">SIM2</button>
+          </div>
           <form id="smsForm" class="stack-form">
             <label class="field">
               <span class="field__label">目标号码</span>

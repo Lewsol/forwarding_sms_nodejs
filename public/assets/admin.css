@@ -736,7 +736,7 @@ h3 {
 
 .sim-slot {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 8px 12px;
   border: 1px solid var(--hairline);
@@ -751,8 +751,8 @@ h3 {
 }
 
 .sim-slot.is-active {
-  border-color: rgba(93, 184, 114, 0.55);
-  box-shadow: inset 3px 0 0 var(--success);
+  border-color: var(--surface-cream-strong);
+  background: var(--surface-soft);
 }
 
 .sim-slot__topline {
@@ -782,8 +782,8 @@ h3 {
 }
 
 .sim-slot.is-active .sim-slot__state {
-  background: rgba(93, 184, 114, 0.16);
-  color: #2f7c44;
+  background: var(--surface-cream-strong);
+  color: var(--body-strong);
 }
 
 .sim-slot__phone {
@@ -979,7 +979,7 @@ h3 {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin: -4px 0 var(--space-md);
+  margin: -4px 0 8px;
   padding: 0;
 }
 
@@ -995,6 +995,17 @@ h3 {
   font-size: 13px;
   font-weight: 600;
   overflow-wrap: anywhere;
+}
+
+.send-sim-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 var(--space-md);
+}
+
+.send-sim-picker .button {
+  min-width: 96px;
 }
 
 .field {

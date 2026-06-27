@@ -254,6 +254,11 @@ function renderSendSimLabel() {
   setText(elements.sendSimLabel, getActiveSimLabel());
 }
 
+function setSimSwitchStatus(message, type = '') {
+  setStatusMessage(elements.simStatus, message);
+  setStatusMessage(elements.smsStatus, message, type);
+}
+
 function getSimSlot(sim = {}, slotNumber) {
   return (sim.slots || []).find(slot => slot.slot === slotNumber) || {
     slot: slotNumber,
@@ -367,15 +372,15 @@ function renderSimStatus(sim = {}) {
     const unavailable = slotInfo.present === false;
     button.hidden = singleSlot;
     button.disabled = state.simBusy || Boolean(sim.switching) || !supported || isActive || unavailable;
-    button.textContent = isActive ? '正在使用' : `切到SIM${slot + 1}`;
+    button.textContent = isActive ? `SIM${slot + 1} 当前` : `切到SIM${slot + 1}`;
   });
 
   if (state.simBusy || sim.switching) {
-    setStatusMessage(elements.simStatus, '正在切换SIM...');
+    setSimSwitchStatus('正在切换SIM...');
   } else if (supported && activeSlot?.present === true) {
-    setStatusMessage(elements.simStatus, `当前 ${getSimDisplayLabel(activeSlot)}`, 'success');
+    setStatusMessage(elements.simStatus, `当前 ${getSimDisplayLabel(activeSlot)}`);
   } else if (supported && activeSlot?.present === false) {
-    setStatusMessage(elements.simStatus, `${getSimDisplayLabel(activeSlot)} 未就绪，请检查是否插卡`, 'error');
+    setStatusMessage(elements.simStatus, `${getSimDisplayLabel(activeSlot)} 未就绪，请检查是否插卡`);
   } else if (!supported) {
     setStatusMessage(elements.simStatus, '双卡不可用');
   } else {
@@ -867,10 +872,10 @@ async function switchSim(slot) {
       body: JSON.stringify({ slot: slotNumber })
     });
     renderSimStatus(result.data || {});
-    setStatusMessage(elements.simStatus, result.message || `已切换到SIM${slotNumber + 1}`, 'success');
+    setSimSwitchStatus(result.message || `已切换到SIM${slotNumber + 1}`, 'success');
     await refreshAll();
   } catch (err) {
-    setStatusMessage(elements.simStatus, err.message, 'error');
+    setSimSwitchStatus(err.message, 'error');
     await refreshSim().catch(() => {});
   } finally {
     state.simBusy = false;
