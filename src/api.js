@@ -50,7 +50,7 @@ class APIServer {
     // JSON解析
     this.app.use(express.json());
 
-    // Web Token认证，API保留Basic Auth兼容
+    // Web Token认证
     this.app.use((req, res, next) => {
       this.authenticateRequest(req, res, next);
     });
@@ -75,22 +75,23 @@ class APIServer {
       return next();
     }
 
-    if (this.isWebRoute(req) && this.getConfiguredWebToken()) {
-      return this.sendTokenGate(res);
-    }
+    if (this.isWebRoute(req)) {
+      const webToken = this.getConfiguredWebToken();
+      if (webToken) {
+        return this.sendTokenGate(res);
+      }
 
-    if (this.hasValidBasicAuth(req)) {
-      return next();
+      return res.status(401).send('未配置 webToken');
     }
 
     if (req.path.startsWith('/api/')) {
       return res.status(401).json({
         success: false,
-        error: this.getConfiguredWebToken() ? '需要有效token或Basic Auth' : '需要Basic Auth'
+        error: this.getConfiguredWebToken() ? '需要有效token' : '未配置webToken'
       });
     }
 
-    return this.sendBasicAuthChallenge(res);
+    return res.status(401).send(this.getConfiguredWebToken() ? '需要有效token' : '未配置 webToken');
   }
 
   getConfiguredWebToken() {
@@ -143,24 +144,6 @@ class APIServer {
     return `${url.pathname}${url.search}`;
   }
 
-  hasValidBasicAuth(req) {
-    const auth = req.get('authorization') || '';
-    if (!auth.startsWith('Basic ')) {
-      return false;
-    }
-
-    const decoded = Buffer.from(auth.slice(6), 'base64').toString('utf8');
-    const separatorIndex = decoded.indexOf(':');
-    if (separatorIndex === -1) {
-      return false;
-    }
-
-    const username = decoded.slice(0, separatorIndex);
-    const password = decoded.slice(separatorIndex + 1);
-    return this.safeEqual(username, this.config.api.auth.username) &&
-      this.safeEqual(password, this.config.api.auth.password);
-  }
-
   safeEqual(actual, expected) {
     const actualBuffer = Buffer.from(String(actual));
     const expectedBuffer = Buffer.from(String(expected));
@@ -174,11 +157,6 @@ class APIServer {
 
   isWebRoute(req) {
     return req.path === '/' || req.path === '/admin' || req.path.startsWith('/assets/');
-  }
-
-  sendBasicAuthChallenge(res) {
-    res.set('WWW-Authenticate', 'Basic realm="SMS Gateway"');
-    return res.status(401).send('Authentication required');
   }
 
   sendTokenGate(res) {
