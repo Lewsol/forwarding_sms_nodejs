@@ -33,6 +33,7 @@ class ModemManager extends EventEmitter {
       switchSlot: null,
       bindSlot: null,
       switching: false,
+      probing: false,
       slots: this.createSimSlots(),
       lastCheckedAt: null,
       error: '',
@@ -63,6 +64,7 @@ class ModemManager extends EventEmitter {
       slot,
       name: `SIM${slot + 1}`,
       active: false,
+      present: null,
       phoneNumber,
       phoneLabel: phoneNumber || `SIM${slot + 1}`,
       lastCheckedAt: null
@@ -538,6 +540,25 @@ class ModemManager extends EventEmitter {
     }));
   }
 
+  updateSimSlotPresence(status, slotNumber, present) {
+    const slot = this.normalizeSimSlot(slotNumber);
+    if (slot === null) {
+      return;
+    }
+
+    status.slots = status.slots.map(item => {
+      if (item.slot !== slot) {
+        return item;
+      }
+
+      return {
+        ...item,
+        present: Boolean(present),
+        lastCheckedAt: new Date().toISOString()
+      };
+    });
+  }
+
   getBusinessSimSlot(status = this.sim) {
     return this.normalizeSimSlot(status.bindSlot) ?? this.normalizeSimSlot(status.switchSlot);
   }
@@ -637,14 +658,27 @@ class ModemManager extends EventEmitter {
       retryDelay = 2000,
       settleDelay = 3000,
       confirmTimeout = 15000,
-      confirmInterval = 1000
+      confirmInterval = 1000,
+      simReadyAttempts = 10,
+      simReadyDelay = 1000
     } = options;
 
     const currentSlot = await this.querySwitchSimSlot().catch(() => this.sim.switchSlot);
     this.sim.switchSlot = currentSlot;
 
     if (currentSlot === targetSlot) {
-      await this.waitSIMReady();
+      try {
+        await this.waitSIMReady({
+          attempts: simReadyAttempts,
+          delay: simReadyDelay,
+          label: `SIM${targetSlot + 1}`
+        });
+        this.updateSimSlotPresence(this.sim, targetSlot, true);
+      } catch (err) {
+        this.updateSimSlotPresence(this.sim, targetSlot, false);
+        throw err;
+      }
+
       return targetSlot;
     }
 
@@ -674,9 +708,153 @@ class ModemManager extends EventEmitter {
     this.sim.switchSlot = targetSlot;
     this.markActiveSimSlot(this.sim, this.getBusinessSimSlot(this.sim) ?? targetSlot);
     await this.sleep(settleDelay);
-    await this.waitSIMReady();
+
+    try {
+      await this.waitSIMReady({
+        attempts: simReadyAttempts,
+        delay: simReadyDelay,
+        label: `SIM${targetSlot + 1}`
+      });
+      this.updateSimSlotPresence(this.sim, targetSlot, true);
+    } catch (err) {
+      this.updateSimSlotPresence(this.sim, targetSlot, false);
+      await this.restoreSwitchSimSlot(currentSlot, `${context}失败后回退`).catch((restoreErr) => {
+        logger.warn(`${context}失败后回退SIM失败: ${restoreErr.message}`);
+      });
+      throw err;
+    }
 
     return targetSlot;
+  }
+
+  async restoreSwitchSimSlot(slotNumber, context = 'SIM回退', timeout = 20000) {
+    const slot = this.normalizeSimSlot(slotNumber);
+    if (slot === null) {
+      return false;
+    }
+
+    logger.warn(`${context}: 恢复到SIM${slot + 1}`);
+    await this.sendATCommand(`AT+SWITCHSIM=${slot}`, 10000).catch((err) => {
+      logger.warn(`${context}命令失败: ${err.message}`);
+    });
+
+    const restored = await this.waitForSwitchSimSlot(slot, timeout, 1000);
+    if (restored) {
+      this.sim.switchSlot = slot;
+      this.markActiveSimSlot(this.sim, this.getBusinessSimSlot(this.sim) ?? slot);
+      return true;
+    }
+
+    logger.warn(`${context}: 未能确认恢复到SIM${slot + 1}`);
+    return false;
+  }
+
+  async restoreBindSimSlot(slotNumber, context = '业务SIM回退') {
+    const slot = this.normalizeSimSlot(slotNumber);
+    if (slot === null) {
+      return false;
+    }
+
+    await this.sendATWithRetry(`AT+BINDSIM=${slot}`, {
+      timeout: 5000,
+      retries: 1,
+      retryDelay: 500,
+      label: `${context}到SIM${slot + 1}`
+    }).catch((err) => {
+      logger.warn(`${context}到SIM${slot + 1}失败: ${err.message}`);
+    });
+
+    return true;
+  }
+
+  async restoreSimAfterProbe(switchSlot, bindSlot, context = 'SIM探测后恢复') {
+    const targetSwitchSlot = this.normalizeSimSlot(switchSlot);
+    const targetBindSlot = this.normalizeSimSlot(bindSlot) ?? targetSwitchSlot;
+
+    if (targetSwitchSlot !== null) {
+      await this.restoreSwitchSimSlot(targetSwitchSlot, context).catch((err) => {
+        logger.warn(`${context}切回SIM${targetSwitchSlot + 1}失败: ${err.message}`);
+      });
+    }
+
+    if (targetBindSlot !== null) {
+      await this.restoreBindSimSlot(targetBindSlot, context);
+    }
+  }
+
+  async probeInactiveSimSlot(status, slotNumber, originalSlot, originalBindSlot = originalSlot) {
+    const targetSlot = this.normalizeSimSlot(slotNumber);
+    const restoreSlot = this.normalizeSimSlot(originalSlot);
+    const restoreBindSlot = this.normalizeSimSlot(originalBindSlot) ?? restoreSlot;
+    if (targetSlot === null || restoreSlot === null || targetSlot === restoreSlot) {
+      return false;
+    }
+
+    logger.info(`探测SIM${targetSlot + 1}是否可用`);
+    let switched = false;
+
+    try {
+      const resp = await this.sendATCommand(`AT+SWITCHSIM=${targetSlot}`, 10000);
+      if (!resp.includes('OK')) {
+        logger.warn(`探测SIM${targetSlot + 1}切换返回非OK: ${this.formatATResponse(resp)}`);
+      }
+
+      switched = await this.waitForSwitchSimSlot(targetSlot, 15000, 1000);
+      if (!switched) {
+        this.updateSimSlotPresence(status, targetSlot, false);
+        return false;
+      }
+
+      await this.sleep(1000);
+      await this.waitSIMReady({
+        attempts: 5,
+        delay: 1000,
+        label: `SIM${targetSlot + 1}`
+      });
+      this.updateSimSlotPresence(status, targetSlot, true);
+      return true;
+    } catch (err) {
+      logger.warn(`探测SIM${targetSlot + 1}失败: ${err.message}`);
+      this.updateSimSlotPresence(status, targetSlot, false);
+      return false;
+    } finally {
+      if (switched) {
+        await this.restoreSimAfterProbe(restoreSlot, restoreBindSlot, `探测SIM${targetSlot + 1}后恢复`);
+      }
+    }
+  }
+
+  async probeSimSlotPresence(status, currentSlot) {
+    const originalSlot = this.normalizeSimSlot(currentSlot);
+    if (!status.supported || !status.canSwitch || originalSlot === null) {
+      return status;
+    }
+
+    if (this.sim.switching || this.sim.probing) {
+      return status;
+    }
+
+    const originalBindSlot = this.normalizeSimSlot(status.bindSlot) ?? originalSlot;
+
+    this.sim.probing = true;
+    try {
+      for (const slot of status.slots) {
+        if (slot.slot !== originalSlot) {
+          await this.probeInactiveSimSlot(status, slot.slot, originalSlot, originalBindSlot);
+        }
+      }
+
+      await this.restoreSimAfterProbe(originalSlot, originalBindSlot, 'SIM探测结束恢复');
+
+      const restoredSlot = await this.querySwitchSimSlot().catch(() => originalSlot);
+      status.switchSlot = this.normalizeSimSlot(restoredSlot) ?? originalSlot;
+      status.bindSlot = await this.queryBindSimSlot();
+      this.markActiveSimSlot(status, this.getBusinessSimSlot(status));
+      return status;
+    } finally {
+      this.sim.probing = false;
+      status.probing = false;
+    }
   }
 
   async waitForSwitchSimSlot(targetSlot, timeout = 15000, interval = 1000) {
@@ -806,12 +984,27 @@ class ModemManager extends EventEmitter {
     }
   }
 
+  isSimReadyResponse(resp) {
+    return String(resp || '').includes('+CPIN: READY');
+  }
+
+  async isCurrentSimReady(timeout = 2000) {
+    try {
+      const resp = await this.sendATCommand('AT+CPIN?', timeout);
+      return this.isSimReadyResponse(resp);
+    } catch (err) {
+      logger.debug(`查询当前SIM就绪状态失败: ${err.message}`);
+      return false;
+    }
+  }
+
   async getSimStatus(options = {}) {
     return await this.refreshSimStatus(options);
   }
 
   async refreshSimStatus(options = {}) {
     const refreshIdentity = options.refreshIdentity === true;
+    const probeSlots = options.probeSlots === true;
     const status = {
       ...this.sim,
       slots: this.sim.slots.map(slot => ({ ...slot })),
@@ -839,6 +1032,8 @@ class ModemManager extends EventEmitter {
       if (switchSlot !== null) {
         status.canSwitch = true;
         status.switchSlot = switchSlot;
+        const currentSimReady = await this.isCurrentSimReady();
+        this.updateSimSlotPresence(status, switchSlot, currentSimReady);
       } else {
         status.switchSlot = null;
         status.error = '未能读取当前AT SIM卡槽';
@@ -850,6 +1045,10 @@ class ModemManager extends EventEmitter {
       if (refreshIdentity && switchSlot !== null) {
         const phoneNumber = await this.queryOwnPhoneNumber();
         this.updateSimSlotPhoneNumber(status, switchSlot, phoneNumber);
+      }
+
+      if (probeSlots && status.canSwitch && switchSlot !== null) {
+        await this.probeSimSlotPresence(status, switchSlot);
       }
 
       status.lastCheckedAt = new Date().toISOString();
@@ -896,12 +1095,20 @@ class ModemManager extends EventEmitter {
         await this.switchSimForIdentityRead(targetSlot, {
           context: `切换SIM${targetSlot + 1}`,
           purpose: '用于业务绑定',
-          retries: 4,
-          retryDelay: 3000,
-          settleDelay: 3000
+          retries: 2,
+          retryDelay: 1000,
+          settleDelay: 1000,
+          confirmTimeout: 5000,
+          confirmInterval: 1000,
+          simReadyAttempts: 3,
+          simReadyDelay: 1000
         });
       } else {
-        await this.waitSIMReady();
+        await this.waitSIMReady({
+          attempts: 3,
+          delay: 1000,
+          label: `SIM${targetSlot + 1}`
+        });
       }
 
       if (this.normalizeSimSlot(before.bindSlot) !== targetSlot) {
@@ -1753,7 +1960,7 @@ class ModemManager extends EventEmitter {
 
     // 7. 按文档配置短信功能，并启用本项目需要的PDU模式
     await this.configureSMS();
-    await this.refreshSimStatus({ refreshIdentity: true });
+    await this.refreshSimStatus({ refreshIdentity: true, probeSlots: true });
 
     logger.info('模组初始化完成');
     this.emit('ready');
@@ -1762,24 +1969,29 @@ class ModemManager extends EventEmitter {
   /**
    * 等待SIM卡完成初始化
    */
-  async waitSIMReady() {
-    for (let attempt = 1; attempt <= 10; attempt++) {
+  async waitSIMReady(options = {}) {
+    const attempts = options.attempts ?? 10;
+    const delay = options.delay ?? 1000;
+    const timeout = options.timeout ?? 2000;
+    const label = options.label || 'SIM卡';
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
-        const resp = await this.sendATCommand('AT+CPIN?', 2000);
-        if (resp.includes('+CPIN: READY')) {
-          logger.info('✓ SIM卡已就绪');
+        const resp = await this.sendATCommand('AT+CPIN?', timeout);
+        if (this.isSimReadyResponse(resp)) {
+          logger.info(`✓ ${label}已就绪`);
           return;
         }
 
-        logger.warn(`SIM卡未就绪(${attempt}/10): ${this.formatATResponse(resp)}`);
+        logger.warn(`${label}未就绪(${attempt}/${attempts}): ${this.formatATResponse(resp)}`);
       } catch (err) {
-        logger.warn(`查询SIM卡状态失败(${attempt}/10): ${err.message}`);
+        logger.warn(`查询${label}状态失败(${attempt}/${attempts}): ${err.message}`);
       }
 
-      await this.sleep(1000);
+      await this.sleep(delay);
     }
 
-    throw new Error('SIM卡未就绪');
+    throw new Error(`${label}未就绪，可能未插卡或SIM初始化失败`);
   }
 
   /**

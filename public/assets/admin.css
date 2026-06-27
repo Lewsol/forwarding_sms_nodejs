@@ -70,6 +70,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html {
   scroll-behavior: smooth;
   scroll-padding-top: 80px;
@@ -726,6 +730,10 @@ h3 {
   gap: var(--space-md);
 }
 
+.sim-slot-grid.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .sim-slot {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -735,6 +743,11 @@ h3 {
   border-radius: var(--r-md);
   background: var(--canvas);
   padding: 12px 14px;
+}
+
+.sim-slot.is-single {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 76px;
 }
 
 .sim-slot.is-active {

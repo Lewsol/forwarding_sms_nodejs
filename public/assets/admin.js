@@ -50,6 +50,7 @@ const elements = {
   simStatus: document.querySelector('#simStatus'),
   simSlot0: document.querySelector('#simSlot0'),
   simSlot1: document.querySelector('#simSlot1'),
+  simSlotGrid: document.querySelector('.sim-slot-grid'),
   simSlot0State: document.querySelector('#simSlot0State'),
   simSlot1State: document.querySelector('#simSlot1State'),
   simSlot0Phone: document.querySelector('#simSlot0Phone'),
@@ -281,7 +282,18 @@ function renderSimSlot(slot, card, stateNode, phoneNode) {
   }
 
   card.classList.toggle('is-active', Boolean(slot.active));
-  setText(stateNode, slot.active ? '当前使用' : '未选中');
+  if (slot.active && slot.present === false) {
+    setText(stateNode, '当前未就绪');
+  } else if (slot.active) {
+    setText(stateNode, '当前使用');
+  } else if (slot.present === true) {
+    setText(stateNode, '可用');
+  } else if (slot.present === false) {
+    setText(stateNode, '未检测到SIM');
+  } else {
+    setText(stateNode, '未确认');
+  }
+
   const phoneText = formatSimSlotPhone(slot);
   if (phoneNode) {
     phoneNode.textContent = phoneText;
@@ -289,29 +301,81 @@ function renderSimSlot(slot, card, stateNode, phoneNode) {
   }
 }
 
+function getVisibleSimSlots(sim = {}, activeSlot = null) {
+  const slots = sim.slots || [];
+  const presentSlots = slots.filter(slot => slot.present === true);
+
+  if (presentSlots.length >= 2) {
+    return presentSlots;
+  }
+
+  if (activeSlot?.present === true) {
+    return [activeSlot];
+  }
+
+  return slots.filter(slot => slot.active || slot.present !== false);
+}
+
+function getSimModeLabel(sim = {}, activeSlot = null) {
+  const hardwareSwitchable = Boolean(sim.supported && sim.canSwitch);
+  if (!hardwareSwitchable) {
+    return '单卡/未检测到双卡';
+  }
+
+  const presentSlots = (sim.slots || []).filter(slot => slot.present === true);
+  if (presentSlots.length >= 2) {
+    return sim.modeLabel || '双卡';
+  }
+
+  if (activeSlot?.present === true) {
+    return `仅检测到 ${getSimDisplayLabel(activeSlot)}`;
+  }
+
+  return '未检测到可用SIM';
+}
+
 function renderSimStatus(sim = {}) {
   state.currentSim = sim;
 
   const supported = Boolean(sim.supported && sim.canSwitch);
   const activeSlot = getActiveSimSlot(sim);
-  const modeLabel = supported ? (sim.modeLabel || '双卡') : '单卡/未检测到双卡';
+  const modeLabel = getSimModeLabel(sim, activeSlot);
 
   setText(elements.simMode, modeLabel);
 
-  renderSimSlot(getSimSlot(sim, 0), elements.simSlot0, elements.simSlot0State, elements.simSlot0Phone);
-  renderSimSlot(getSimSlot(sim, 1), elements.simSlot1, elements.simSlot1State, elements.simSlot1Phone);
+  const visibleSlots = getVisibleSimSlots(sim, activeSlot);
+  const singleSlot = visibleSlots.length === 1;
+  const visibleSlotNumbers = new Set(visibleSlots.map(slot => slot.slot));
+
+  elements.simSlotGrid?.classList.toggle('is-single', singleSlot);
+
+  [
+    [getSimSlot(sim, 0), elements.simSlot0, elements.simSlot0State, elements.simSlot0Phone],
+    [getSimSlot(sim, 1), elements.simSlot1, elements.simSlot1State, elements.simSlot1Phone]
+  ].forEach(([slot, card, stateNode, phoneNode]) => {
+    if (card) {
+      card.hidden = !visibleSlotNumbers.has(slot.slot);
+      card.classList.toggle('is-single', singleSlot && visibleSlotNumbers.has(slot.slot));
+    }
+    renderSimSlot(slot, card, stateNode, phoneNode);
+  });
 
   elements.simSwitchButtons.forEach((button) => {
     const slot = Number.parseInt(button.dataset.simSwitch, 10);
+    const slotInfo = getSimSlot(sim, slot);
     const isActive = activeSlot?.slot === slot;
-    button.disabled = state.simBusy || Boolean(sim.switching) || !supported || isActive;
+    const unavailable = slotInfo.present === false;
+    button.hidden = singleSlot;
+    button.disabled = state.simBusy || Boolean(sim.switching) || !supported || isActive || unavailable;
     button.textContent = isActive ? '正在使用' : `切到SIM${slot + 1}`;
   });
 
   if (state.simBusy || sim.switching) {
     setStatusMessage(elements.simStatus, '正在切换SIM...');
-  } else if (supported && activeSlot) {
+  } else if (supported && activeSlot?.present === true) {
     setStatusMessage(elements.simStatus, `当前 ${getSimDisplayLabel(activeSlot)}`, 'success');
+  } else if (supported && activeSlot?.present === false) {
+    setStatusMessage(elements.simStatus, `${getSimDisplayLabel(activeSlot)} 未就绪，请检查是否插卡`, 'error');
   } else if (!supported) {
     setStatusMessage(elements.simStatus, '双卡不可用');
   } else {
