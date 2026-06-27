@@ -27,12 +27,125 @@ class SMSProcessor {
     this.loadReceivedMessages();
   }
 
+  normalizeIncomingPduEvent(input) {
+    if (typeof input === 'string') {
+      return {
+        pdu: input,
+        metadata: {
+          type: 'CMT',
+          raw: '',
+          simSlot: null,
+          receivedAt: new Date().toISOString()
+        }
+      };
+    }
+
+    if (input && typeof input === 'object') {
+      return {
+        pdu: String(input.pdu || input.pduHex || ''),
+        metadata: {
+          ...(input.metadata || {}),
+          simSlot: this.normalizeSimSlot(input.metadata?.simSlot ?? input.simSlot),
+          receivedAt: input.metadata?.receivedAt || input.receivedAt || new Date().toISOString()
+        }
+      };
+    }
+
+    return {
+      pdu: '',
+      metadata: {
+        type: 'CMT',
+        raw: '',
+        simSlot: null,
+        receivedAt: new Date().toISOString()
+      }
+    };
+  }
+
+  resolveIncomingSimIdentity({ metadata = {} } = {}) {
+    const urcSlot = this.normalizeSimSlot(metadata.simSlot);
+    if (urcSlot !== null) {
+      return this.createSimIdentityFromSlot(urcSlot, {
+        simSource: metadata.simSource || 'urc'
+      });
+    }
+
+    const identified = this.modem?.identifyIncomingSms?.(metadata);
+    if (identified?.slot !== undefined && identified?.slot !== null) {
+      return this.createSimIdentityFromSlot(identified.slot, {
+        simSource: identified.source || 'slot'
+      });
+    }
+
+    const directSource = metadata.simSource || (metadata.type === 'CMT' || metadata.type === 'CMTI' ? 'urc' : '');
+    if (directSource) {
+      return {
+        simId: crypto.createHash('sha256').update(`unknown-${directSource}`).digest('hex').slice(0, 24),
+        simLabel: '未知SIM',
+        simSlot: null,
+        simSource: directSource,
+        smsCenter: ''
+      };
+    }
+
+    return null;
+  }
+
+  createSimIdentityFromSlot(slotNumber, extra = {}) {
+    const slot = this.normalizeSimSlot(slotNumber);
+    if (slot === null) {
+      return null;
+    }
+
+    const simStatus = this.modem?.getCachedSimStatus?.();
+    const slotInfo = simStatus?.slots?.find(item => item.slot === slot);
+    const name = slotInfo?.phoneLabel || slotInfo?.phoneNumber || slotInfo?.name || `SIM${slot + 1}`;
+
+    return {
+      simId: crypto.createHash('sha256').update(`slot:${slot}`).digest('hex').slice(0, 24),
+      simLabel: name,
+      simSlot: slot,
+      simSource: extra.simSource || 'slot',
+      smsCenter: ''
+    };
+  }
+
+  normalizeSimSlot(value) {
+    if (typeof value === 'string') {
+      const normalized = value.trim().toUpperCase();
+      if (normalized === 'SIM1') {
+        return 0;
+      }
+      if (normalized === 'SIM2') {
+        return 1;
+      }
+    }
+
+    const slot = Number.parseInt(value, 10);
+    return slot === 0 || slot === 1 ? slot : null;
+  }
+
+  formatSimSource(source) {
+    const labels = {
+      urc: 'URC上报',
+      bind_context: '绑定上下文',
+      active_context: '当前卡槽',
+      slot: '卡槽',
+      current_slot: '当前卡槽'
+    };
+
+    return labels[source] || '未知';
+  }
+
   /**
    * 处理接收到的PDU短信
    */
-  async processPDU(pduHex) {
+  async processPDU(input) {
     try {
       logger.info('开始解析PDU数据...');
+
+      const smsEvent = this.normalizeIncomingPduEvent(input);
+      const pduHex = smsEvent.pdu;
 
       // 解析PDU
       const parsed = parse(pduHex);
@@ -47,12 +160,15 @@ class SMSProcessor {
       const text = parsed.data?.getText?.() || '';
       const part = parsed.data?.parts?.[0];
       const header = part?.header;
-      const simIdentity = await this.getCurrentSimIdentity();
+      const simIdentity = this.resolveIncomingSimIdentity({
+        metadata: smsEvent.metadata
+      });
 
       logger.info('✓ PDU解析成功');
       logger.info(`发送者: ${sender}`);
       logger.info(`时间戳: ${timestamp}`);
       logger.info(`收件SIM: ${simIdentity?.simLabel || '未知SIM'}`);
+      logger.info(`识别方式: ${this.formatSimSource(simIdentity?.simSource)}`);
       logger.info(`内容: ${text}`);
 
       // 检查是否为长短信
@@ -95,6 +211,7 @@ class SMSProcessor {
     logger.info(`发送者: ${sender}`);
     logger.info(`时间戳: ${timestamp}`);
     logger.info(`收件SIM: ${simIdentity?.simLabel || '未知SIM'}`);
+    logger.info(`识别方式: ${this.formatSimSource(simIdentity?.simSource)}`);
     logger.info(`内容: ${text}`);
     logger.info('====================');
 
@@ -127,6 +244,9 @@ class SMSProcessor {
       receivedAt: new Date().toISOString(),
       simId: normalizedSimIdentity?.simId || '',
       simLabel: normalizedSimIdentity?.simLabel || '未知SIM',
+      simSlot: normalizedSimIdentity?.simSlot ?? null,
+      simSource: normalizedSimIdentity?.simSource || 'unknown',
+      smsCenter: normalizedSimIdentity?.smsCenter || '',
       status: 'received',
       statusText: '已接收'
     };
@@ -164,16 +284,26 @@ class SMSProcessor {
    */
   listReceivedMessages(limit = 50, options = {}) {
     const safeLimit = this.resolveReceivedMessagesLimit(limit);
-    const requestedScope = String(options.scope || 'current').trim().toLowerCase();
+    const requestedSimSlot = this.normalizeSimSlot(options.simSlot);
+    const hasRequestedScope = options.scope !== undefined && options.scope !== null && String(options.scope).trim() !== '';
+    const requestedScope = requestedSimSlot !== null
+      ? `sim${requestedSimSlot + 1}`
+      : hasRequestedScope
+      ? String(options.scope).trim().toLowerCase()
+      : (this.shouldDefaultToAllSimMessages() ? 'all' : 'current');
     const currentSim = this.normalizeSimIdentity(options.currentSimIdentity);
-    const includeAllSims = requestedScope === 'all' && this.allowAllSimMessages;
+    const autoAllSims = !hasRequestedScope && requestedScope === 'all';
+    const includeAllSims = requestedSimSlot === null && requestedScope === 'all';
 
     let effectiveScope = includeAllSims ? 'all' : 'current';
     let messages = this.receivedMessages;
 
-    if (this.partitionMessagesBySim && !includeAllSims) {
+    if (requestedSimSlot !== null) {
+      messages = this.receivedMessages.filter(message => this.normalizeSimSlot(message.simSlot) === requestedSimSlot);
+      effectiveScope = `sim${requestedSimSlot + 1}`;
+    } else if (this.partitionMessagesBySim && !includeAllSims) {
       if (currentSim?.simId) {
-        messages = this.receivedMessages.filter(message => message.simId === currentSim.simId);
+        messages = this.receivedMessages.filter(message => this.messageMatchesSim(message, currentSim));
       } else {
         messages = [];
         effectiveScope = 'unavailable';
@@ -190,12 +320,36 @@ class SMSProcessor {
         scope: effectiveScope,
         requestedScope,
         partitionBySim: this.partitionMessagesBySim,
-        allSimMessagesAllowed: this.allowAllSimMessages,
-        allSimMessagesDenied: this.partitionMessagesBySim && requestedScope === 'all' && !this.allowAllSimMessages,
+        allSimMessagesAllowed: this.allowAllSimMessages || includeAllSims || autoAllSims,
+        allSimMessagesDenied: false,
+        simSlot: requestedSimSlot,
         currentSim,
         currentSimKnown: Boolean(currentSim?.simId)
       }
     };
+  }
+
+  shouldDefaultToAllSimMessages() {
+    if (this.config.inbox?.dualSimDefaultScope === 'current') {
+      return false;
+    }
+
+    const simStatus = this.modem?.getCachedSimStatus?.();
+    return simStatus?.supported === true && (simStatus.mode === 0 || simStatus.mode === 3);
+  }
+
+  messageMatchesSim(message, currentSim) {
+    if (!message || !currentSim) {
+      return false;
+    }
+
+    if (message.simId && currentSim.simId && message.simId === currentSim.simId) {
+      return true;
+    }
+
+    const messageSlot = this.normalizeSimSlot(message.simSlot);
+    const currentSlot = this.normalizeSimSlot(currentSim.simSlot);
+    return messageSlot !== null && currentSlot !== null && messageSlot === currentSlot;
   }
 
   /**
@@ -319,6 +473,9 @@ class SMSProcessor {
       receivedAt: String(item.receivedAt || new Date().toISOString()),
       simId: simIdentity?.simId || '',
       simLabel: simIdentity?.simLabel || '未知SIM',
+      simSlot: simIdentity?.simSlot ?? null,
+      simSource: simIdentity?.simSource || item.simSource || 'unknown',
+      smsCenter: '',
       status: String(item.status || 'received'),
       statusText: String(item.statusText || '已接收')
     };
@@ -331,16 +488,14 @@ class SMSProcessor {
     if (item.simId || item.simLabel) {
       return this.normalizeSimIdentity({
         simId: item.simId,
-        simLabel: item.simLabel
+        simLabel: item.simLabel,
+        simSlot: item.simSlot,
+        simSource: item.simSource
       });
     }
 
     if (item.sim && typeof item.sim === 'object') {
       return this.normalizeSimIdentity(item.sim);
-    }
-
-    if (item.simIccid || item.iccid) {
-      return this.createSimIdentityFromICCID(item.simIccid || item.iccid);
     }
 
     return null;
@@ -361,34 +516,31 @@ class SMSProcessor {
       return this.currentSimLookup;
     }
 
-    if (!this.modem?.getICCID) {
-      this.currentSimIdentity = null;
-      this.currentSimCheckedAt = now;
-      return null;
+    if (this.modem?.isSimSwitching?.()) {
+      return this.currentSimIdentity;
     }
 
-    this.currentSimLookup = (async () => {
-      try {
-        const iccid = await this.modem.getICCID({ refresh: true });
-        return this.setCurrentSimFromICCID(iccid);
-      } catch (err) {
-        logger.warn(`查询当前SIM标识失败: ${err.message}`);
-        this.currentSimIdentity = null;
-        this.currentSimCheckedAt = Date.now();
-        return null;
-      } finally {
-        this.currentSimLookup = null;
-      }
-    })();
+    const modemSim = this.getCurrentModemSimIdentity();
+    if (modemSim?.simId) {
+      return this.setCurrentSimIdentity(modemSim);
+    }
 
-    return this.currentSimLookup;
+    this.currentSimIdentity = null;
+    this.currentSimCheckedAt = now;
+    return null;
   }
 
-  /**
-   * 使用ICCID更新当前SIM身份缓存。
-   */
-  setCurrentSimFromICCID(iccid) {
-    return this.setCurrentSimIdentity(this.createSimIdentityFromICCID(iccid));
+  getCurrentModemSimIdentity() {
+    const simStatus = this.modem?.getCachedSimStatus?.();
+    const activeSlot = simStatus?.activeSlot;
+    if (activeSlot === null || activeSlot === undefined) {
+      return this.currentSimIdentity;
+    }
+
+    const identity = this.createSimIdentityFromSlot(activeSlot, {
+      simSource: 'current_slot'
+    });
+    return identity || this.currentSimIdentity;
   }
 
   /**
@@ -400,59 +552,31 @@ class SMSProcessor {
     return this.currentSimIdentity;
   }
 
-  /**
-   * 根据ICCID生成稳定但不暴露完整卡号的SIM标识。
-   */
-  createSimIdentityFromICCID(iccid) {
-    const normalized = this.normalizeICCID(iccid);
-    if (!normalized) {
-      return null;
-    }
-
-    return {
-      simId: crypto.createHash('sha256').update(`iccid:${normalized}`).digest('hex').slice(0, 24),
-      simLabel: this.formatSimLabel(normalized)
-    };
-  }
-
-  normalizeICCID(iccid) {
-    return String(iccid || '').replace(/\D/g, '');
-  }
-
-  formatSimLabel(iccid) {
-    const value = String(iccid || '');
-    if (!value) {
-      return '未知SIM';
-    }
-
-    return `ICCID ...${value.slice(-6)}`;
-  }
-
   normalizeSimIdentity(identity) {
     if (!identity) {
       return null;
     }
 
     if (typeof identity === 'string') {
-      return this.createSimIdentityFromICCID(identity);
+      return null;
     }
 
     if (typeof identity !== 'object' || Array.isArray(identity)) {
       return null;
     }
 
-    if (identity.iccid || identity.simIccid) {
-      return this.createSimIdentityFromICCID(identity.iccid || identity.simIccid);
-    }
-
+    const simSlot = this.normalizeSimSlot(identity.simSlot ?? identity.slot);
     const simId = String(identity.simId || identity.id || '').trim();
-    if (!simId) {
+    if (!simId && simSlot === null) {
       return null;
     }
 
     return {
-      simId,
-      simLabel: String(identity.simLabel || identity.label || '未知SIM')
+      simId: simId || crypto.createHash('sha256').update(`slot:${simSlot}`).digest('hex').slice(0, 24),
+      simLabel: String(identity.simLabel || identity.label || (simSlot === null ? '未知SIM' : `SIM${simSlot + 1}`)),
+      simSlot,
+      simSource: String(identity.simSource || identity.source || 'unknown'),
+      smsCenter: ''
     };
   }
 

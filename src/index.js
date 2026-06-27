@@ -46,7 +46,7 @@ async function main() {
   logger.info('配置加载完成');
 
   // 创建模组管理器
-  const modem = new ModemManager(config.serial, config.mobileData);
+  const modem = new ModemManager(config.serial, config.mobileData, config);
 
   // 创建长短信管理器
   const concatManager = new ConcatManager();

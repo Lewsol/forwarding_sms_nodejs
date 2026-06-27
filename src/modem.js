@@ -7,22 +7,37 @@ import path from 'path';
 import logger from './logger.js';
 
 class ModemManager extends EventEmitter {
-  constructor(config, mobileDataConfig = {}) {
+  constructor(config, mobileDataConfig = {}, appConfig = {}) {
     super();
     this.config = config;
+    this.appConfig = appConfig;
     this.mobileDataConfig = {
       cid: this.normalizeMobileDataCid(mobileDataConfig.cid)
     };
+    this.smsSending = false;
     this.port = null;
     this.parser = null;
+    this.atCommandQueue = Promise.resolve();
     this.ready = false;
     this.modelInfo = {
       manufacturer: '未知',
       model: '未知',
       version: '未知'
     };
-    this.iccid = null;
-    this.iccidCheckedAt = null;
+    this.sim = {
+      supported: false,
+      canSwitch: false,
+      mode: null,
+      modeLabel: '未知',
+      activeSlot: null,
+      switchSlot: null,
+      bindSlot: null,
+      switching: false,
+      slots: this.createSimSlots(),
+      lastCheckedAt: null,
+      error: '',
+      notice: '直出模式下按模组URC接收短信；URC未携带卡槽时显示未知SIM。'
+    };
     this.mobileData = {
       cid: this.mobileDataConfig.cid,
       desiredEnabled: false,
@@ -34,6 +49,23 @@ class ModemManager extends EventEmitter {
       contexts: [],
       lastCheckedAt: null,
       error: ''
+    };
+  }
+
+  createSimSlots() {
+    return [0, 1].map(slot => this.createSimSlot(slot));
+  }
+
+  createSimSlot(slot) {
+    const phoneNumber = this.getConfiguredSimPhoneNumber(slot);
+
+    return {
+      slot,
+      name: `SIM${slot + 1}`,
+      active: false,
+      phoneNumber,
+      phoneLabel: phoneNumber || `SIM${slot + 1}`,
+      lastCheckedAt: null
     };
   }
 
@@ -380,6 +412,528 @@ class ModemManager extends EventEmitter {
     }
 
     return 1;
+  }
+
+  getConfiguredSimPhoneNumber(slotNumber) {
+    const slot = this.normalizeSimSlot(slotNumber);
+    if (slot === null) {
+      return '';
+    }
+
+    const sources = [
+      this.appConfig?.simCards,
+      this.appConfig?.simSlots,
+      this.appConfig?.sims,
+      this.appConfig?.sim
+    ];
+
+    for (const source of sources) {
+      const phoneNumber = this.extractConfiguredSimPhoneNumber(source, slot);
+      if (phoneNumber) {
+        return phoneNumber;
+      }
+    }
+
+    return '';
+  }
+
+  extractConfiguredSimPhoneNumber(source, slot) {
+    if (!source) {
+      return '';
+    }
+
+    let candidate = null;
+    if (Array.isArray(source)) {
+      candidate = source.find(item => this.normalizeSimSlot(item?.slot ?? item?.simSlot ?? item?.sim) === slot) ||
+        source[slot];
+    } else if (typeof source === 'object') {
+      candidate = source[slot] ?? source[String(slot)] ?? source[`sim${slot + 1}`] ?? source[`SIM${slot + 1}`];
+    }
+
+    if (typeof candidate === 'string' || typeof candidate === 'number') {
+      return this.normalizePhoneNumber(candidate);
+    }
+
+    if (candidate && typeof candidate === 'object') {
+      return this.normalizePhoneNumber(candidate.phoneNumber ?? candidate.phone ?? candidate.msisdn ?? candidate.number);
+    }
+
+    return '';
+  }
+
+  normalizePhoneNumber(value) {
+    const text = String(value || '').trim();
+    if (!text) {
+      return '';
+    }
+
+    const normalized = text.replace(/[^\d+]/g, '');
+    return normalized.length >= 3 ? normalized : '';
+  }
+
+  normalizeSimSlot(value) {
+    if (typeof value === 'string') {
+      const normalized = value.trim().toUpperCase();
+      if (normalized === 'SIM1') {
+        return 0;
+      }
+      if (normalized === 'SIM2') {
+        return 1;
+      }
+    }
+
+    const slot = Number.parseInt(value, 10);
+    return slot === 0 || slot === 1 ? slot : null;
+  }
+
+  getCachedSimStatus() {
+    return {
+      ...this.sim,
+      slots: this.sim.slots.map(slot => ({ ...slot }))
+    };
+  }
+
+  isSimSwitching() {
+    return Boolean(this.sim.switching);
+  }
+
+  formatDualSimMode(mode) {
+    if (mode === 0) {
+      return '双卡双待';
+    }
+    if (mode === 1) {
+      return '双卡单待';
+    }
+    if (mode === 3) {
+      return '双卡双待(FP)';
+    }
+    return '未知';
+  }
+
+  parseDualSimMode(resp) {
+    const match = String(resp || '').match(/\+DUALSIM:\s*(\d+)/);
+    if (!match) {
+      return null;
+    }
+
+    const mode = Number.parseInt(match[1], 10);
+    return Number.isInteger(mode) ? mode : null;
+  }
+
+  parseSimSlotResponse(resp, prefix) {
+    const pattern = new RegExp(`\\+${prefix}:\\s*(\\d+)`, 'i');
+    const match = String(resp || '').match(pattern);
+    if (!match) {
+      return null;
+    }
+
+    return this.normalizeSimSlot(match[1]);
+  }
+
+  markActiveSimSlot(status, activeSlot) {
+    status.activeSlot = activeSlot;
+    status.slots = status.slots.map(slot => ({
+      ...slot,
+      active: slot.slot === activeSlot
+    }));
+  }
+
+  getBusinessSimSlot(status = this.sim) {
+    return this.normalizeSimSlot(status.bindSlot) ?? this.normalizeSimSlot(status.switchSlot);
+  }
+
+  getSimSlotLabel(slotNumber) {
+    const slot = this.normalizeSimSlot(slotNumber);
+    if (slot === null) {
+      return '未知SIM';
+    }
+
+    const slotInfo = this.sim.slots.find(item => item.slot === slot);
+    return slotInfo?.phoneLabel || slotInfo?.phoneNumber || `SIM${slot + 1}`;
+  }
+
+  updateSimSlotPhoneNumber(status, slotNumber, phoneNumber) {
+    const slot = this.normalizeSimSlot(slotNumber);
+    if (slot === null) {
+      return;
+    }
+
+    const normalized = this.normalizePhoneNumber(phoneNumber);
+    if (!normalized) {
+      return;
+    }
+
+    status.slots = status.slots.map(item => {
+      if (item.slot !== slot) {
+        return item;
+      }
+
+      return {
+        ...item,
+        phoneNumber: normalized,
+        phoneLabel: normalized,
+        lastCheckedAt: new Date().toISOString()
+      };
+    });
+  }
+
+  parseOwnNumberResponse(resp) {
+    const lines = String(resp || '')
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean);
+
+    for (const line of lines) {
+      if (/^AT/i.test(line) || line === 'OK' || line === 'ERROR') {
+        continue;
+      }
+
+      const match = line.match(/^\+CNUM:\s*(?:"[^"]*")?\s*,\s*"?([^",\s]*)"?/i);
+      if (match) {
+        return this.normalizePhoneNumber(match[1]);
+      }
+    }
+
+    return '';
+  }
+
+  async queryOwnPhoneNumber() {
+    try {
+      const resp = await this.sendATCommand('AT+CNUM', 2000);
+      return this.parseOwnNumberResponse(resp);
+    } catch (err) {
+      logger.debug(`查询当前SIM手机号失败: ${err.message}`);
+      return '';
+    }
+  }
+
+  async readCurrentSimSlotPhoneNumber(slotNumber, context = '当前') {
+    const slot = this.normalizeSimSlot(slotNumber);
+    if (slot === null) {
+      return false;
+    }
+
+    const phoneNumber = await this.queryOwnPhoneNumber();
+    if (!phoneNumber) {
+      logger.debug(`${context}SIM${slot + 1}未读取到手机号`);
+      return false;
+    }
+
+    this.updateSimSlotPhoneNumber(this.sim, slot, phoneNumber);
+    logger.info(`✓ ${context}SIM${slot + 1}手机号: ${phoneNumber}`);
+    return true;
+  }
+
+  async switchSimForIdentityRead(slotNumber, options = {}) {
+    const targetSlot = this.normalizeSimSlot(slotNumber);
+    if (targetSlot === null) {
+      throw new Error('SIM卡槽参数无效，只支持 SIM1 或 SIM2');
+    }
+
+    const {
+      context = '启动探测',
+      purpose = '',
+      retries = 2,
+      retryDelay = 2000,
+      settleDelay = 3000,
+      confirmTimeout = 15000,
+      confirmInterval = 1000
+    } = options;
+
+    const currentSlot = await this.querySwitchSimSlot().catch(() => this.sim.switchSlot);
+    this.sim.switchSlot = currentSlot;
+
+    if (currentSlot === targetSlot) {
+      await this.waitSIMReady();
+      return targetSlot;
+    }
+
+    logger.info(`${context}: 切到SIM${targetSlot + 1}${purpose ? purpose : ''}`);
+    let switched = false;
+
+    for (let attempt = 1; attempt <= retries && !switched; attempt++) {
+      try {
+        const resp = await this.sendATCommand(`AT+SWITCHSIM=${targetSlot}`, 10000);
+        if (!resp.includes('OK')) {
+          logger.warn(`${context}切到SIM${targetSlot + 1}返回非OK(${attempt}/${retries}): ${this.formatATResponse(resp)}`);
+        }
+      } catch (err) {
+        logger.warn(`${context}切到SIM${targetSlot + 1}命令失败(${attempt}/${retries}): ${err.message}`);
+      }
+
+      switched = await this.waitForSwitchSimSlot(targetSlot, confirmTimeout, confirmInterval);
+      if (!switched && attempt < retries && retryDelay > 0) {
+        await this.sleep(retryDelay);
+      }
+    }
+
+    if (!switched) {
+      throw new Error(`${context}切到SIM${targetSlot + 1}失败`);
+    }
+
+    this.sim.switchSlot = targetSlot;
+    this.markActiveSimSlot(this.sim, this.getBusinessSimSlot(this.sim) ?? targetSlot);
+    await this.sleep(settleDelay);
+    await this.waitSIMReady();
+
+    return targetSlot;
+  }
+
+  async waitForSwitchSimSlot(targetSlot, timeout = 15000, interval = 1000) {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt <= timeout) {
+      try {
+        const currentSlot = await this.querySwitchSimSlot();
+        this.sim.switchSlot = currentSlot;
+        if (currentSlot === targetSlot) {
+          return true;
+        }
+      } catch (err) {
+        logger.debug(`等待SWITCHSIM生效失败: ${err.message}`);
+      }
+
+      await this.sleep(interval);
+    }
+
+    return false;
+  }
+
+  async ensureATSimMatchesBinding(context = 'SIM同步') {
+    if (!this.sim.supported || !this.sim.canSwitch) {
+      return null;
+    }
+
+    const bindSlot = this.normalizeSimSlot(this.sim.bindSlot ?? await this.queryBindSimSlot());
+    if (bindSlot === null) {
+      return null;
+    }
+
+    const switchSlot = await this.querySwitchSimSlot();
+    this.sim.switchSlot = switchSlot;
+    this.markActiveSimSlot(this.sim, bindSlot);
+
+    if (switchSlot === bindSlot) {
+      return {
+        slot: bindSlot,
+        changed: false
+      };
+    }
+
+    const currentLabel = switchSlot === null ? '未知' : `SIM${switchSlot + 1}`;
+    logger.warn(`${context}: 业务绑定为SIM${bindSlot + 1}，但AT当前为${currentLabel}，准备同步AT卡槽`);
+    await this.switchSimForIdentityRead(bindSlot, {
+      context,
+      purpose: '用于短信发送',
+      retries: 4,
+      retryDelay: 3000,
+      settleDelay: 3000
+    });
+
+    return {
+      slot: bindSlot,
+      changed: true
+    };
+  }
+
+  async discoverSimSlotIdentities() {
+    const status = await this.refreshSimStatus({ refreshIdentity: false });
+    const currentSlot = this.normalizeSimSlot(status.switchSlot) ??
+      this.normalizeSimSlot(status.activeSlot) ??
+      0;
+
+    logger.info(`启动仅初始化当前SIM${currentSlot + 1}，不读取SMSC、不遍历其他卡槽`);
+    await this.waitSIMReady();
+    await this.readCurrentSimSlotPhoneNumber(currentSlot, '启动当前');
+    this.sim.lastCheckedAt = new Date().toISOString();
+
+    return this.getCachedSimStatus();
+  }
+
+  identifyIncomingSms(metadata = {}) {
+    const urcSlot = this.normalizeSimSlot(metadata.simSlot);
+    if (urcSlot !== null) {
+      return {
+        slot: urcSlot,
+        source: metadata.simSource || 'urc'
+      };
+    }
+
+    return null;
+  }
+
+  async queryDualSimMode() {
+    try {
+      const resp = await this.sendATCommand('AT+DUALSIM?', 2000);
+      const mode = this.parseDualSimMode(resp);
+      if (mode === null) {
+        return {
+          supported: false,
+          mode: null,
+          modeLabel: '未检测到双卡能力',
+          error: this.formatATResponse(resp)
+        };
+      }
+
+      return {
+        supported: true,
+        mode,
+        modeLabel: this.formatDualSimMode(mode),
+        error: ''
+      };
+    } catch (err) {
+      return {
+        supported: false,
+        mode: null,
+        modeLabel: '未检测到双卡能力',
+        error: err.message
+      };
+    }
+  }
+
+  async querySwitchSimSlot() {
+    const resp = await this.sendATCommand('AT+SWITCHSIM?', 2000);
+    return this.parseSimSlotResponse(resp, 'SWITCHSIM');
+  }
+
+  async queryBindSimSlot() {
+    try {
+      const resp = await this.sendATCommand('AT+BINDSIM?', 2000);
+      return this.parseSimSlotResponse(resp, 'BINDSIM');
+    } catch (err) {
+      logger.debug(`查询BINDSIM失败: ${err.message}`);
+      return null;
+    }
+  }
+
+  async getSimStatus(options = {}) {
+    return await this.refreshSimStatus(options);
+  }
+
+  async refreshSimStatus(options = {}) {
+    const refreshIdentity = options.refreshIdentity === true;
+    const status = {
+      ...this.sim,
+      slots: this.sim.slots.map(slot => ({ ...slot })),
+      error: ''
+    };
+
+    try {
+      const dualSim = await this.queryDualSimMode();
+      status.supported = dualSim.supported;
+      status.canSwitch = false;
+      status.mode = dualSim.mode;
+      status.modeLabel = dualSim.modeLabel;
+
+      if (!dualSim.supported) {
+        status.activeSlot = null;
+        status.switchSlot = null;
+        status.bindSlot = null;
+        status.error = dualSim.error || '';
+        status.lastCheckedAt = new Date().toISOString();
+        this.sim = status;
+        return this.getCachedSimStatus();
+      }
+
+      const switchSlot = await this.querySwitchSimSlot();
+      if (switchSlot !== null) {
+        status.canSwitch = true;
+        status.switchSlot = switchSlot;
+      } else {
+        status.switchSlot = null;
+        status.error = '未能读取当前AT SIM卡槽';
+      }
+
+      status.bindSlot = await this.queryBindSimSlot();
+      this.markActiveSimSlot(status, this.getBusinessSimSlot(status));
+
+      if (refreshIdentity && switchSlot !== null) {
+        const phoneNumber = await this.queryOwnPhoneNumber();
+        this.updateSimSlotPhoneNumber(status, switchSlot, phoneNumber);
+      }
+
+      status.lastCheckedAt = new Date().toISOString();
+      this.sim = status;
+      return this.getCachedSimStatus();
+    } catch (err) {
+      logger.warn(`查询SIM状态失败: ${err.message}`);
+      status.error = err.message;
+      status.lastCheckedAt = new Date().toISOString();
+      this.sim = status;
+      return this.getCachedSimStatus();
+    }
+  }
+
+  async switchSim(slotNumber) {
+    const targetSlot = this.normalizeSimSlot(slotNumber);
+    if (targetSlot === null) {
+      throw new Error('SIM卡槽参数无效，只支持 SIM1 或 SIM2');
+    }
+
+    if (this.sim.switching) {
+      throw new Error('SIM正在切换中，请稍后再试');
+    }
+
+    const before = await this.refreshSimStatus({ refreshIdentity: false });
+    if (!before.supported || !before.canSwitch) {
+      logger.warn(`绑定SIM前状态不可用: supported=${before.supported}, canSwitch=${before.canSwitch}, bindSlot=${before.bindSlot ?? 'unknown'}, switchSlot=${before.switchSlot ?? 'unknown'}, error=${before.error || 'none'}`);
+      throw new Error(before.error || '当前模组未检测到双卡绑定能力');
+    }
+
+    if (this.normalizeSimSlot(before.bindSlot) === targetSlot && this.normalizeSimSlot(before.switchSlot) === targetSlot) {
+      logger.info(`当前已经绑定并切到SIM${targetSlot + 1}`);
+      return {
+        changed: false,
+        status: await this.refreshSimStatus({ refreshIdentity: false })
+      };
+    }
+
+    logger.info(`准备切到并绑定SIM${targetSlot + 1}`);
+    this.sim.switching = true;
+
+    try {
+      if (this.normalizeSimSlot(before.switchSlot) !== targetSlot) {
+        await this.switchSimForIdentityRead(targetSlot, {
+          context: `切换SIM${targetSlot + 1}`,
+          purpose: '用于业务绑定',
+          retries: 4,
+          retryDelay: 3000,
+          settleDelay: 3000
+        });
+      } else {
+        await this.waitSIMReady();
+      }
+
+      if (this.normalizeSimSlot(before.bindSlot) !== targetSlot) {
+        await this.sendATWithRetry(`AT+BINDSIM=${targetSlot}`, {
+          timeout: 5000,
+          retries: 2,
+          retryDelay: 1000,
+          label: `绑定到SIM${targetSlot + 1}`
+        });
+      }
+
+      this.sim.bindSlot = targetSlot;
+      this.markActiveSimSlot(this.sim, targetSlot);
+      await this.readCurrentSimSlotPhoneNumber(targetSlot, '切换后');
+      await this.configureSMS();
+
+      this.sim.switching = false;
+      const status = await this.refreshSimStatus({ refreshIdentity: false });
+      const activeSlot = this.normalizeSimSlot(status.activeSlot);
+      const switchSlot = this.normalizeSimSlot(status.switchSlot);
+      if (activeSlot !== targetSlot || switchSlot !== targetSlot) {
+        throw new Error(`切换SIM后状态不一致: activeSlot=${activeSlot ?? 'unknown'}, switchSlot=${switchSlot ?? 'unknown'}`);
+      }
+
+      logger.info(`✓ 已绑定并切到SIM${targetSlot + 1}`);
+      return {
+        changed: true,
+        status
+      };
+    } finally {
+      this.sim.switching = false;
+    }
   }
 
   getMobileDataMode() {
@@ -835,11 +1389,94 @@ class ModemManager extends EventEmitter {
     return active || '无';
   }
 
+  splitATFields(value) {
+    const fields = [];
+    let current = '';
+    let quoted = false;
+
+    for (const char of String(value || '')) {
+      if (char === '"') {
+        quoted = !quoted;
+        continue;
+      }
+
+      if (char === ',' && !quoted) {
+        fields.push(current.trim());
+        current = '';
+        continue;
+      }
+
+      current += char;
+    }
+
+    fields.push(current.trim());
+    return fields;
+  }
+
+  parseSimSlotHint(value) {
+    const text = String(value || '').trim();
+    if (!text) {
+      return null;
+    }
+
+    const explicit = text.match(/\bSIM\s*[:=]?\s*([12])\b/i) || text.match(/\bSLOT\s*[:=]?\s*([12])\b/i);
+    if (explicit) {
+      return Number.parseInt(explicit[1], 10) - 1;
+    }
+
+    const zeroBased = text.match(/\b(?:SIM|SLOT)\s*[:=]\s*([01])\b/i);
+    if (zeroBased) {
+      return Number.parseInt(zeroBased[1], 10);
+    }
+
+    return null;
+  }
+
+  parseIncomingSmsURC(line) {
+    const raw = String(line || '').trim();
+    const payload = raw.replace(/^\+CMT:\s*/i, '');
+    const fields = this.splitATFields(payload);
+    const length = Number.parseInt(fields[fields.length - 1], 10);
+    const simSlot = fields
+      .map(field => this.parseSimSlotHint(field))
+      .find(slot => slot === 0 || slot === 1);
+
+    return {
+      type: 'CMT',
+      raw,
+      fields,
+      length: Number.isFinite(length) ? length : null,
+      simSlot: simSlot ?? null,
+      receivedAt: new Date().toISOString()
+    };
+  }
+
+  parseIncomingSmsIndexURC(line) {
+    const raw = String(line || '').trim();
+    const payload = raw.replace(/^\+CMTI:\s*/i, '');
+    const fields = this.splitATFields(payload);
+    const mem = fields[0] || '';
+    const index = Number.parseInt(fields[1], 10);
+    const simSlot = fields
+      .map(field => this.parseSimSlotHint(field))
+      .find(slot => slot === 0 || slot === 1);
+
+    return {
+      type: 'CMTI',
+      raw,
+      mem,
+      index: Number.isFinite(index) ? index : null,
+      simSlot: simSlot ?? null,
+      receivedAt: new Date().toISOString()
+    };
+  }
+
   /**
    * 设置URC监听器
    */
   setupURCListener() {
     let waitingPDU = false;
+    let pendingSms = null;
 
     this.parser.on('data', (line) => {
       line = line.trim();
@@ -851,17 +1488,37 @@ class ModemManager extends EventEmitter {
 
       // 检测短信URC
       if (line.startsWith('+CMT:')) {
-        logger.info('检测到短信URC，等待PDU数据...');
+        pendingSms = this.parseIncomingSmsURC(line);
+        const slotLabel = pendingSms.simSlot === null ? '未携带卡槽' : `SIM${pendingSms.simSlot + 1}`;
+        logger.info(`检测到短信URC(${slotLabel})，等待PDU数据...`);
         waitingPDU = true;
+      } else if (line.startsWith('+CMTI:')) {
+        const notification = this.parseIncomingSmsIndexURC(line);
+        const slotLabel = notification.simSlot === null ? '未携带卡槽' : `SIM${notification.simSlot + 1}`;
+        logger.info(`检测到短信存储通知(${slotLabel}): ${notification.mem || '未知存储'} ${notification.index ?? '未知编号'}`);
+        this.emit('sms-notification', notification);
+        this.readSmsFromNotification(notification).catch((err) => {
+          logger.warn(`读取短信存储通知失败: ${err.message}`);
+        });
       } else if (waitingPDU && this.isHexString(line)) {
         logger.info('收到PDU数据');
         waitingPDU = false;
-        this.emit('sms', line); // 发射短信事件
+        this.emit('sms', {
+          pdu: line,
+          metadata: pendingSms || {
+            type: 'CMT',
+            raw: '',
+            simSlot: null,
+            receivedAt: new Date().toISOString()
+          }
+        });
+        pendingSms = null;
       } else if (waitingPDU && line.length === 0) {
         // 跳过空行
       } else if (waitingPDU) {
         // 收到非PDU数据，返回等待状态
         waitingPDU = false;
+        pendingSms = null;
       }
 
       // 检测网络注册状态变化
@@ -869,6 +1526,67 @@ class ModemManager extends EventEmitter {
         this.emit('cereg', line);
       }
     });
+  }
+
+  parseStoredSmsResponse(resp, notification = {}) {
+    const lines = String(resp || '')
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean);
+    let header = '';
+    let pdu = '';
+
+    for (const line of lines) {
+      if (line.startsWith('+CMGR:')) {
+        header = line;
+        continue;
+      }
+
+      if (!pdu && this.isHexString(line) && line.length > 8) {
+        pdu = line;
+      }
+    }
+
+    if (!pdu) {
+      return null;
+    }
+
+    const headerFields = header ? this.splitATFields(header.replace(/^\+CMGR:\s*/i, '')) : [];
+    const length = Number.parseInt(headerFields[headerFields.length - 1], 10);
+
+    return {
+      pdu,
+      metadata: {
+        ...notification,
+        type: 'CMTI',
+        raw: notification.raw || '',
+        cmgrRaw: header,
+        length: Number.isFinite(length) ? length : null,
+        receivedAt: notification.receivedAt || new Date().toISOString()
+      }
+    };
+  }
+
+  async readSmsFromNotification(notification = {}) {
+    if (!Number.isInteger(notification.index)) {
+      logger.warn('短信存储通知缺少有效编号，跳过读取');
+      return false;
+    }
+
+    const memLabel = notification.mem ? `${notification.mem},` : '';
+    logger.info(`读取存储短信: ${memLabel}${notification.index}`);
+    const resp = await this.sendATCommand(`AT+CMGR=${notification.index}`, 5000);
+    const sms = this.parseStoredSmsResponse(resp, notification);
+
+    if (!sms) {
+      logger.warn(`未能从存储短信读取到PDU: ${this.formatATResponse(resp)}`);
+      return false;
+    }
+
+    logger.info('收到存储短信PDU数据');
+    this.emit('sms', sms);
+    await this.deleteSmsAtIndex(notification.index, notification.simSlot);
+    return true;
   }
 
   /**
@@ -882,7 +1600,22 @@ class ModemManager extends EventEmitter {
    * 发送AT命令并等待响应
    */
   async sendATCommand(cmd, timeout = 2000) {
+    return this.enqueueATCommand(() => this.sendATCommandUnlocked(cmd, timeout));
+  }
+
+  enqueueATCommand(task) {
+    const run = this.atCommandQueue.then(task, task);
+    this.atCommandQueue = run.catch(() => {});
+    return run;
+  }
+
+  sendATCommandUnlocked(cmd, timeout = 2000) {
     return new Promise((resolve, reject) => {
+      if (!this.port || !this.port.isOpen || !this.parser) {
+        reject(new Error('串口未打开'));
+        return;
+      }
+
       let buffer = '';
       const timer = setTimeout(() => {
         this.parser.removeListener('data', handler);
@@ -996,34 +1729,31 @@ class ModemManager extends EventEmitter {
       logger.warn('查询模组信息失败');
     }
 
+    // 3. 启动时先重置协议栈，避免上一次双卡切换/短信上报状态残留。
+    await this.resetProtocolStackForStartup();
+
+    // 3.1. 查询双卡能力和当前卡槽；不支持时保持单卡运行。
+    await this.refreshSimStatus({ refreshIdentity: false });
+
     // 3. 按ML307A文档先确认SIM卡和协议栈状态
     await this.waitSIMReady();
-    await this.getICCID({ refresh: true });
+
+    // 启动时只初始化当前卡，不遍历其他卡槽。
+    await this.discoverSimSlotIdentities();
     await this.ensureFullFunctionality();
 
     // 4. 启动保护：先断开应用层拨号，再等待短信所需的网络注册。
     await this.forceMobileDataOff('启动保护(CFUN=1后)');
 
     // 5. 等待网络注册
-    retries = 0;
-    while (!(await this.waitCEREG()) && retries < 30) {
-      logger.info('等待网络注册...');
-      retries++;
-      await this.sleep(2000);
-    }
-    if (retries < 30) {
-      logger.info('✓ 网络已注册');
-      this.ready = true;
-    } else {
-      logger.error('网络注册超时（无SIM卡或信号差）');
-      this.ready = false;
-    }
+    this.ready = await this.waitForNetworkRegistration('启动', 30, 2000);
 
     // 6. 驻网后再断开一次，防止模组自动拨号在驻网完成后重新拉起。
     await this.forceMobileDataOff('启动保护(驻网后)');
 
     // 7. 按文档配置短信功能，并启用本项目需要的PDU模式
     await this.configureSMS();
+    await this.refreshSimStatus({ refreshIdentity: true });
 
     logger.info('模组初始化完成');
     this.emit('ready');
@@ -1077,6 +1807,37 @@ class ModemManager extends EventEmitter {
   }
 
   /**
+   * 启动时重置协议栈。避免使用 AT+CFUN=1,1 整机重启导致USB串口断开后反复重启容器。
+   */
+  async resetProtocolStackForStartup() {
+    logger.info('启动初始化: 重置协议栈(CFUN=0 -> CFUN=1)');
+
+    try {
+      await this.sendATWithRetry('AT+CFUN=0', {
+        timeout: 8000,
+        retries: 2,
+        retryDelay: 1000,
+        label: '启动重置协议栈(CFUN=0)',
+        required: false
+      });
+
+      await this.sleep(3000);
+
+      await this.sendATWithRetry('AT+CFUN=1', {
+        timeout: 10000,
+        retries: 3,
+        retryDelay: 2000,
+        label: '启动恢复协议栈(CFUN=1)'
+      });
+
+      await this.sleep(5000);
+      logger.info('✓ 启动协议栈重置完成');
+    } catch (err) {
+      logger.warn(`启动协议栈重置失败，继续初始化: ${err.message}`);
+    }
+  }
+
+  /**
    * 按ML307A文档配置短信功能；项目接收逻辑依赖PDU模式下的+CMT上报。
    */
   async configureSMS() {
@@ -1111,6 +1872,21 @@ class ModemManager extends EventEmitter {
       label: '设置短信发送参数'
     });
     logger.info('✓ 短信发送参数设置完成');
+
+    return null;
+  }
+
+  async deleteSmsAtIndex(index, slot = null) {
+    try {
+      await this.sendATWithRetry(`AT+CMGD=${index}`, {
+        timeout: 5000,
+        retries: 1,
+        label: `删除已读取短信${slot === null ? '' : `(SIM${slot + 1})`}`,
+        required: false
+      });
+    } catch (err) {
+      logger.warn(`删除已读取短信失败: ${err.message}`);
+    }
   }
 
   /**
@@ -1138,17 +1914,58 @@ class ModemManager extends EventEmitter {
     }
   }
 
+  async waitForNetworkRegistration(label = '网络注册', maxRetries = 30, retryDelay = 2000) {
+    let retries = 0;
+    while (!(await this.waitCEREG()) && retries < maxRetries) {
+      logger.info(`${label}: 等待网络注册...`);
+      retries++;
+      await this.sleep(retryDelay);
+    }
+
+    if (retries < maxRetries) {
+      logger.info('✓ 网络已注册');
+      return true;
+    }
+
+    logger.error(`${label}: 网络注册超时（无SIM卡或信号差）`);
+    return false;
+  }
+
   /**
    * 发送短信（PDU模式）
    */
   async sendSMS(phoneNumber, message) {
+    const sendResult = {
+      success: false,
+      simSlot: null,
+      simLabel: '未知SIM',
+      parts: 0
+    };
+
+    if (this.isSimSwitching()) {
+      logger.warn('SIM切换中，暂不发送短信');
+      return sendResult;
+    }
+
     logger.info(`准备发送短信到: ${phoneNumber}`);
     logger.info(`短信内容: ${message}`);
+    this.smsSending = true;
 
     try {
+      const simSync = await this.ensureATSimMatchesBinding('发送短信前SIM同步');
+      if (simSync?.changed) {
+        await this.configureSMS();
+      }
+
+      const sendSlot = this.normalizeSimSlot(simSync?.slot ?? this.sim.bindSlot ?? await this.queryBindSimSlot().catch(() => null));
+      sendResult.simSlot = sendSlot;
+      sendResult.simLabel = this.getSimSlotLabel(sendSlot);
+      logger.info(`发送使用SIM: ${sendResult.simLabel}${sendSlot === null ? '' : ` (SIM${sendSlot + 1})`}`);
+
       // 编码PDU
       const submit = new Submit(phoneNumber, message);
       const parts = submit.getPartStrings();
+      sendResult.parts = parts.length;
 
       if (parts.length === 0) {
         throw new Error('PDU编码失败');
@@ -1165,15 +1982,18 @@ class ModemManager extends EventEmitter {
         const success = await this.sendPduPart(pduData, pduLength);
         if (!success) {
           logger.error(`✗ 短信分段发送失败: ${i + 1}/${parts.length}`);
-          return false;
+          return sendResult;
         }
       }
 
       logger.info('✓ 短信发送成功');
-      return true;
+      sendResult.success = true;
+      return sendResult;
     } catch (err) {
       logger.error('发送短信异常:', err);
-      return false;
+      return sendResult;
+    } finally {
+      this.smsSending = false;
     }
   }
 
@@ -1241,6 +2061,7 @@ class ModemManager extends EventEmitter {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.parser.removeListener('data', handler);
+        logger.warn('等待CMGS发送结果超时');
         resolve(false);
       }, timeout);
 
@@ -1252,6 +2073,7 @@ class ModemManager extends EventEmitter {
         } else if (line.includes('ERROR')) {
           clearTimeout(timer);
           this.parser.removeListener('data', handler);
+          logger.warn(`CMGS发送返回错误: ${String(line).trim()}`);
           resolve(false);
         }
       };
@@ -1306,77 +2128,6 @@ class ModemManager extends EventEmitter {
       logger.error('查询运营商失败:', err);
       return '未知';
     }
-  }
-
-  /**
-   * 查询ICCID
-   */
-  async getICCID(options = {}) {
-    if (!options.refresh && this.iccid) {
-      return this.iccid;
-    }
-
-    const commands = ['AT+ICCID', 'AT+CCID', 'AT+QCCID'];
-
-    for (const command of commands) {
-      try {
-        const resp = await this.sendATCommand(command, 2000);
-        const iccid = this.parseICCIDResponse(resp);
-
-        if (iccid) {
-          const previousICCID = this.iccid;
-          this.iccid = iccid;
-          this.iccidCheckedAt = new Date().toISOString();
-          if (previousICCID !== this.iccid) {
-            logger.info(`✓ 当前SIM ICCID: ${this.formatICCID(this.iccid)}`);
-          }
-          return this.iccid;
-        }
-
-        logger.debug(`${command}未返回可识别ICCID: ${this.formatATResponse(resp)}`);
-      } catch (err) {
-        logger.debug(`${command}查询ICCID失败: ${err.message}`);
-      }
-    }
-
-    this.iccid = null;
-    this.iccidCheckedAt = new Date().toISOString();
-    logger.warn('查询ICCID失败: 模组未返回可识别ICCID');
-    return null;
-  }
-
-  parseICCIDResponse(resp) {
-    const lines = String(resp || '')
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean);
-
-    for (const line of lines) {
-      if (/^AT/i.test(line) || line === 'OK' || line === 'ERROR') {
-        continue;
-      }
-
-      const prefixed = line.match(/^\+(?:ICCID|CCID|QCCID):\s*"?([0-9]{18,22})"?/i);
-      if (prefixed) {
-        return prefixed[1];
-      }
-
-      const plain = line.match(/^"?([0-9]{18,22})"?$/);
-      if (plain) {
-        return plain[1];
-      }
-    }
-
-    return null;
-  }
-
-  formatICCID(iccid) {
-    const value = String(iccid || '');
-    if (!value) {
-      return '未知';
-    }
-
-    return `...${value.slice(-6)}`;
   }
 
   /**

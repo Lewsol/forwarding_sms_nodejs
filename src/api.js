@@ -374,6 +374,7 @@ class APIServer {
             signal,
             operator,
             mobileData,
+            sim: this.modem.getCachedSimStatus?.() || null,
             uptime: process.uptime()
           }
         });
@@ -398,11 +399,14 @@ class APIServer {
           });
         }
 
-        const success = await this.modem.sendSMS(phone, message);
+        const result = await this.modem.sendSMS(phone, message);
+        const success = Boolean(result?.success);
+        const simLabel = result?.simLabel || '未知SIM';
 
         res.json({
           success,
-          message: success ? '短信发送成功' : '短信发送失败'
+          message: success ? `短信发送成功，发送SIM: ${simLabel}` : `短信发送失败，发送SIM: ${simLabel}`,
+          data: result
         });
       } catch (err) {
         logger.error('发送短信失败:', err);
@@ -416,10 +420,12 @@ class APIServer {
     // 查询收到的短信
     this.app.get('/api/sms/received', async (req, res) => {
       try {
-        const currentSimIdentity = await this.smsProcessor.getCurrentSimIdentity();
+        await this.smsProcessor.getCurrentSimIdentity();
+        const currentSimIdentity = this.smsProcessor.getCurrentModemSimIdentity();
         const result = this.smsProcessor.listReceivedMessages(req.query.limit, {
           currentSimIdentity,
-          scope: req.query.scope
+          scope: req.query.scope,
+          simSlot: req.query.simSlot ?? req.query.slot
         });
 
         res.json({
@@ -456,14 +462,17 @@ class APIServer {
     // 查询模组信息
     this.app.get('/api/modem/info', async (req, res) => {
       try {
-        const iccid = await this.modem.getICCID({ refresh: true });
-        const simIdentity = this.smsProcessor.setCurrentSimFromICCID(iccid);
+        const simStatus = this.modem.getCachedSimStatus?.();
+        const currentSlot = simStatus?.slots?.find(slot => slot.active);
+        const simIdentity = this.smsProcessor.setCurrentSimIdentity(
+          this.smsProcessor.getCurrentModemSimIdentity()
+        );
 
         res.json({
           success: true,
           data: {
             model: this.modem.modelInfo,
-            iccid,
+            phoneNumber: currentSlot?.phoneNumber || '',
             simId: simIdentity?.simId || null,
             simLabel: simIdentity?.simLabel || '未知SIM',
             ready: this.modem.ready
@@ -471,6 +480,50 @@ class APIServer {
         });
       } catch (err) {
         logger.error('查询模组信息失败:', err);
+        res.status(500).json({
+          success: false,
+          error: err.message
+        });
+      }
+    });
+
+    // 查询SIM状态和双卡能力
+    this.app.get('/api/modem/sim', async (req, res) => {
+      try {
+        const sim = await this.modem.getSimStatus({
+          refreshIdentity: req.query.refresh !== 'false'
+        });
+        this.smsProcessor.setCurrentSimIdentity(this.smsProcessor.getCurrentModemSimIdentity());
+
+        res.json({
+          success: true,
+          data: sim
+        });
+      } catch (err) {
+        logger.error('查询SIM状态失败:', err);
+        res.status(500).json({
+          success: false,
+          error: err.message
+        });
+      }
+    });
+
+    // 切换当前SIM卡槽
+    this.app.post('/api/modem/sim/switch', async (req, res) => {
+      try {
+        const slot = req.body?.slot ?? req.body?.sim;
+        const result = await this.modem.switchSim(slot);
+        const currentSlot = result.status.slots.find(item => item.active);
+        this.smsProcessor.setCurrentSimIdentity(this.smsProcessor.getCurrentModemSimIdentity());
+        const currentLabel = currentSlot?.phoneLabel || currentSlot?.phoneNumber || currentSlot?.name || '目标SIM';
+
+        res.json({
+          success: true,
+          message: result.changed ? `已绑定并切到${currentLabel}` : `${currentLabel}已绑定并切换`,
+          data: result.status
+        });
+      } catch (err) {
+        logger.error('切换SIM失败:', err);
         res.status(500).json({
           success: false,
           error: err.message

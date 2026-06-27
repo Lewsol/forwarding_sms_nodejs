@@ -24,6 +24,7 @@
       </a>
       <nav class="nav-links" aria-label="管理导航">
         <a href="#dashboard">状态</a>
+        <a href="#sim">SIM</a>
         <a href="#inbox">收件箱</a>
         <a href="#send">短信</a>
         <a href="#console">AT 控制台</a>
@@ -127,6 +128,36 @@
           </article>
         </div>
 
+        <div class="sim-manager" id="sim">
+          <div class="sim-manager__header">
+            <div>
+              <span class="eyebrow">sim manager</span>
+              <h3 id="simMode">--</h3>
+            </div>
+            <p class="form-status sim-manager__status" id="simStatus" role="status"></p>
+          </div>
+
+          <div class="sim-slot-grid" aria-label="SIM卡槽">
+            <article class="sim-slot" id="simSlot0">
+              <div class="sim-slot__topline">
+                <span class="sim-slot__name">SIM1</span>
+                <span class="sim-slot__state" id="simSlot0State">--</span>
+              </div>
+              <span class="sim-slot__phone" id="simSlot0Phone">--</span>
+              <button class="button button--secondary button--compact" type="button" data-sim-switch="0">切到SIM1</button>
+            </article>
+
+            <article class="sim-slot" id="simSlot1">
+              <div class="sim-slot__topline">
+                <span class="sim-slot__name">SIM2</span>
+                <span class="sim-slot__state" id="simSlot1State">--</span>
+              </div>
+              <span class="sim-slot__phone" id="simSlot1Phone">--</span>
+              <button class="button button--secondary button--compact" type="button" data-sim-switch="1">切到SIM2</button>
+            </article>
+          </div>
+        </div>
+
         <div class="stat-strip">
           <article class="stat-tile">
             <span class="eyebrow">signal</span>
@@ -139,9 +170,9 @@
             <span class="stat-tile__hint" id="moduleVersion">--</span>
           </article>
           <article class="stat-tile">
-            <span class="eyebrow">sim · iccid</span>
-            <span class="stat-tile__value stat-tile__value--mono" id="iccid">--</span>
-            <span class="stat-tile__hint">ICCID 查询来自当前串口模组。</span>
+            <span class="eyebrow">current sim</span>
+            <span class="stat-tile__value" id="currentSim">--</span>
+            <span class="stat-tile__hint">发送短信会使用当前绑定的 SIM。</span>
           </article>
         </div>
       </div>
@@ -161,7 +192,9 @@
             </span>
             <h2>收到的<em>短信</em></h2>
           </div>
-          <button class="button button--secondary" id="messagesButton" type="button">刷新短信</button>
+          <div class="inbox-actions">
+            <button class="button button--secondary" id="messagesButton" type="button">刷新短信</button>
+          </div>
         </div>
         <div class="inbox-panel">
           <div class="inbox-meta">
@@ -190,6 +223,10 @@
             <h2>发送<em>短信</em></h2>
             <p>PDU 模式发送，提交后等待模组返回结果。</p>
           </div>
+          <p class="send-sim-banner" aria-live="polite">
+            <span>当前发送SIM</span>
+            <strong id="sendSimLabel">--</strong>
+          </p>
           <form id="smsForm" class="stack-form">
             <label class="field">
               <span class="field__label">目标号码</span>

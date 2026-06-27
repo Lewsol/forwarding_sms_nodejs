@@ -2,7 +2,9 @@ const state = {
   busy: false,
   mobileDataBusy: false,
   trafficBusy: false,
+  simBusy: false,
   currentMobileData: null,
+  currentSim: null,
   pushChannels: [],
   selectedPushChannel: -1,
   pushLoaded: false
@@ -44,10 +46,20 @@ const elements = {
   mobileDataConsume: document.querySelector('#mobileDataConsume'),
   mobileDataTrafficHint: document.querySelector('#mobileDataTrafficHint'),
   mobileDataStatus: document.querySelector('#mobileDataStatus'),
+  simMode: document.querySelector('#simMode'),
+  simStatus: document.querySelector('#simStatus'),
+  simSlot0: document.querySelector('#simSlot0'),
+  simSlot1: document.querySelector('#simSlot1'),
+  simSlot0State: document.querySelector('#simSlot0State'),
+  simSlot1State: document.querySelector('#simSlot1State'),
+  simSlot0Phone: document.querySelector('#simSlot0Phone'),
+  simSlot1Phone: document.querySelector('#simSlot1Phone'),
+  simSwitchButtons: [...document.querySelectorAll('[data-sim-switch]')],
   moduleModel: document.querySelector('#moduleModel'),
   moduleVersion: document.querySelector('#moduleVersion'),
-  iccid: document.querySelector('#iccid'),
+  currentSim: document.querySelector('#currentSim'),
   smsForm: document.querySelector('#smsForm'),
+  sendSimLabel: document.querySelector('#sendSimLabel'),
   smsStatus: document.querySelector('#smsStatus'),
   messagesButton: document.querySelector('#messagesButton'),
   messageCount: document.querySelector('#messageCount'),
@@ -225,12 +237,97 @@ function renderMobileData(mobileData = {}) {
   elements.mobileDataConsume.disabled = state.mobileDataBusy || state.trafficBusy || !enabled;
 }
 
-function renderStatus(status, info) {
+function getActiveSimSlot(sim = {}) {
+  return (sim.slots || []).find(slot => slot.active) || null;
+}
+
+function getSimDisplayLabel(slot) {
+  return slot?.phoneLabel || slot?.phoneNumber || slot?.name || 'SIM';
+}
+
+function getActiveSimLabel() {
+  return getSimDisplayLabel(getActiveSimSlot(state.currentSim || {}));
+}
+
+function renderSendSimLabel() {
+  setText(elements.sendSimLabel, getActiveSimLabel());
+}
+
+function getSimSlot(sim = {}, slotNumber) {
+  return (sim.slots || []).find(slot => slot.slot === slotNumber) || {
+    slot: slotNumber,
+    name: `SIM${slotNumber + 1}`,
+    active: false,
+    phoneNumber: '',
+    phoneLabel: `SIM${slotNumber + 1}`
+  };
+}
+
+function formatSimSlotPhone(slot) {
+  if (slot?.phoneNumber) {
+    return slot.phoneNumber;
+  }
+
+  if (slot?.phoneLabel && slot.phoneLabel !== slot.name) {
+    return slot.phoneLabel;
+  }
+
+  return '';
+}
+
+function renderSimSlot(slot, card, stateNode, phoneNode) {
+  if (!card) {
+    return;
+  }
+
+  card.classList.toggle('is-active', Boolean(slot.active));
+  setText(stateNode, slot.active ? '当前使用' : '未选中');
+  const phoneText = formatSimSlotPhone(slot);
+  if (phoneNode) {
+    phoneNode.textContent = phoneText;
+    phoneNode.hidden = !phoneText;
+  }
+}
+
+function renderSimStatus(sim = {}) {
+  state.currentSim = sim;
+
+  const supported = Boolean(sim.supported && sim.canSwitch);
+  const activeSlot = getActiveSimSlot(sim);
+  const modeLabel = supported ? (sim.modeLabel || '双卡') : '单卡/未检测到双卡';
+
+  setText(elements.simMode, modeLabel);
+
+  renderSimSlot(getSimSlot(sim, 0), elements.simSlot0, elements.simSlot0State, elements.simSlot0Phone);
+  renderSimSlot(getSimSlot(sim, 1), elements.simSlot1, elements.simSlot1State, elements.simSlot1Phone);
+
+  elements.simSwitchButtons.forEach((button) => {
+    const slot = Number.parseInt(button.dataset.simSwitch, 10);
+    const isActive = activeSlot?.slot === slot;
+    button.disabled = state.simBusy || Boolean(sim.switching) || !supported || isActive;
+    button.textContent = isActive ? '正在使用' : `切到SIM${slot + 1}`;
+  });
+
+  if (state.simBusy || sim.switching) {
+    setStatusMessage(elements.simStatus, '正在切换SIM...');
+  } else if (supported && activeSlot) {
+    setStatusMessage(elements.simStatus, `当前 ${getSimDisplayLabel(activeSlot)}`, 'success');
+  } else if (!supported) {
+    setStatusMessage(elements.simStatus, '双卡不可用');
+  } else {
+    setStatusMessage(elements.simStatus, '');
+  }
+  renderSendSimLabel();
+}
+
+function renderStatus(status, info, sim) {
   const data = status.data || {};
   const infoData = info.data || {};
   const model = data.model || infoData.model || {};
   const signal = data.signal || {};
   const ready = Boolean(data.ready);
+  const simData = sim?.data || data.sim || {};
+  const activeSim = getActiveSimSlot(simData);
 
   setText(elements.readyBadge, ready ? '模组已就绪' : '模组未就绪');
   setText(elements.panelStatus, ready ? 'ready' : 'not ready');
@@ -246,7 +343,8 @@ function renderStatus(status, info) {
   setText(elements.signalHint, signal.ber === undefined ? 'RSSI 与误码率将在刷新后显示。' : `误码率 ${signal.ber}，质量 ${signal.quality || '未知'}。`);
   setText(elements.moduleModel, model.model || '--');
   setText(elements.moduleVersion, model.version || '--');
-  setText(elements.iccid, infoData.iccid || '--');
+  setText(elements.currentSim, getSimDisplayLabel(activeSim) || infoData.simLabel || '--');
+  renderSimStatus(simData);
 }
 
 function parseLogLine(line) {
@@ -314,11 +412,8 @@ function formatDateTime(value) {
 
 function renderMessages(messages, meta = {}) {
   elements.messageList.replaceChildren();
-  const currentSimLabel = meta.currentSim?.simLabel || '当前SIM未知';
-  const countLabel = meta.partitionBySim ? `${currentSimLabel} 最近 ${messages.length} 条` : `全部SIM 最近 ${messages.length} 条`;
-  const scopeLabel = meta.partitionBySim
-    ? (meta.currentSimKnown ? '仅显示当前SIM收到的短信' : '未识别当前SIM，收件箱已隐藏')
-    : 'SIM隔离未启用';
+  const countLabel = `最近 ${messages.length} 条`;
+  const scopeLabel = '新短信自动显示';
 
   setText(elements.messageCount, countLabel);
   setText(elements.messageScope, scopeLabel);
@@ -353,16 +448,8 @@ function renderMessages(messages, meta = {}) {
     text.className = 'message-text';
     text.textContent = message.text || '';
 
-    const metaRow = document.createElement('div');
-    metaRow.className = 'message-meta';
-
-    const sim = document.createElement('span');
-    sim.className = 'message-sim';
-    sim.textContent = message.simLabel || '未知SIM';
-
-    metaRow.append(sim);
     header.append(sender, status, time);
-    item.append(header, metaRow, text);
+    item.append(header, text);
     fragment.append(item);
   });
 
@@ -679,8 +766,52 @@ async function refreshLogs() {
 }
 
 async function refreshMessages() {
-  const messages = await requestJSON('/api/sms/received?limit=50');
+  const params = new URLSearchParams({ limit: '50', scope: 'all' });
+  const messages = await requestJSON(`/api/sms/received?${params.toString()}`);
   renderMessages(messages.data || [], messages.meta || {});
+}
+
+async function refreshSim() {
+  const sim = await requestJSON('/api/modem/sim?refresh=true');
+  renderSimStatus(sim.data || {});
+  return sim;
+}
+
+async function switchSim(slot) {
+  if (state.simBusy) {
+    return;
+  }
+
+  const slotNumber = Number.parseInt(slot, 10);
+  if (!Number.isInteger(slotNumber)) {
+    return;
+  }
+
+  if (!window.confirm(`切换到SIM${slotNumber + 1}会重新初始化SIM、驻网和短信功能，期间可能短暂收不到短信。确定继续吗？`)) {
+    return;
+  }
+
+  state.simBusy = true;
+  renderSimStatus({
+    ...(state.currentSim || {}),
+    switching: true
+  });
+
+  try {
+    const result = await requestJSON('/api/modem/sim/switch', {
+      method: 'POST',
+      body: JSON.stringify({ slot: slotNumber })
+    });
+    renderSimStatus(result.data || {});
+    setStatusMessage(elements.simStatus, result.message || `已切换到SIM${slotNumber + 1}`, 'success');
+    await refreshAll();
+  } catch (err) {
+    setStatusMessage(elements.simStatus, err.message, 'error');
+    await refreshSim().catch(() => {});
+  } finally {
+    state.simBusy = false;
+    renderSimStatus(state.currentSim || {});
+  }
 }
 
 async function toggleMobileData() {
@@ -754,7 +885,8 @@ async function refreshAll() {
   try {
     const status = await requestJSON('/api/status');
     const info = await requestJSON('/api/modem/info');
-    renderStatus(status, info);
+    const sim = await requestJSON('/api/modem/sim?refresh=true');
+    renderStatus(status, info, sim);
     setStatusMessage(elements.mobileDataStatus, '');
     await refreshMessages();
     await refreshLogs();
@@ -784,7 +916,8 @@ async function sendSMS(event) {
   }
 
   submit.disabled = true;
-  setStatusMessage(elements.smsStatus, '发送中...');
+  renderSendSimLabel();
+  setStatusMessage(elements.smsStatus, `正在使用 ${getActiveSimLabel()} 发送...`);
 
   try {
     const result = await requestJSON('/api/sms/send', {
@@ -845,6 +978,11 @@ elements.pushChannelForm.elements.type.addEventListener('change', handlePushType
 elements.refreshButton.addEventListener('click', refreshAll);
 elements.mobileDataToggle.addEventListener('click', toggleMobileData);
 elements.mobileDataConsume.addEventListener('click', consumeMobileDataTraffic);
+elements.simSwitchButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    switchSim(button.dataset.simSwitch);
+  });
+});
 elements.logsButton.addEventListener('click', refreshLogs);
 elements.messagesButton.addEventListener('click', refreshMessages);
 elements.smsForm.addEventListener('submit', sendSMS);
