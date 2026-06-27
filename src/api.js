@@ -414,12 +414,18 @@ class APIServer {
     });
 
     // 查询收到的短信
-    this.app.get('/api/sms/received', (req, res) => {
+    this.app.get('/api/sms/received', async (req, res) => {
       try {
-        const messages = this.smsProcessor.getReceivedMessages(req.query.limit);
+        const currentSimIdentity = await this.smsProcessor.getCurrentSimIdentity();
+        const result = this.smsProcessor.listReceivedMessages(req.query.limit, {
+          currentSimIdentity,
+          scope: req.query.scope
+        });
+
         res.json({
           success: true,
-          data: messages
+          data: result.messages,
+          meta: result.meta
         });
       } catch (err) {
         logger.error('查询收到短信失败:', err);
@@ -450,12 +456,16 @@ class APIServer {
     // 查询模组信息
     this.app.get('/api/modem/info', async (req, res) => {
       try {
-        const iccid = await this.modem.getICCID();
+        const iccid = await this.modem.getICCID({ refresh: true });
+        const simIdentity = this.smsProcessor.setCurrentSimFromICCID(iccid);
+
         res.json({
           success: true,
           data: {
             model: this.modem.modelInfo,
             iccid,
+            simId: simIdentity?.simId || null,
+            simLabel: simIdentity?.simLabel || '未知SIM',
             ready: this.modem.ready
           }
         });

@@ -1,4 +1,5 @@
 import { parse } from 'node-pdu';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -17,6 +18,12 @@ class SMSProcessor {
     this.receivedMessageSeq = 0;
     this.maxReceivedMessages = this.resolveMaxReceivedMessages();
     this.receivedMessagesFile = this.resolveReceivedMessagesFile();
+    this.partitionMessagesBySim = this.resolvePartitionMessagesBySim();
+    this.allowAllSimMessages = this.resolveAllowAllSimMessages();
+    this.currentSimIdentity = null;
+    this.currentSimCheckedAt = 0;
+    this.currentSimLookup = null;
+    this.simIdentityTtlMs = 5 * 1000;
     this.loadReceivedMessages();
   }
 
@@ -40,10 +47,12 @@ class SMSProcessor {
       const text = parsed.data?.getText?.() || '';
       const part = parsed.data?.parts?.[0];
       const header = part?.header;
+      const simIdentity = await this.getCurrentSimIdentity();
 
       logger.info('✓ PDU解析成功');
       logger.info(`发送者: ${sender}`);
       logger.info(`时间戳: ${timestamp}`);
+      logger.info(`收件SIM: ${simIdentity?.simLabel || '未知SIM'}`);
       logger.info(`内容: ${text}`);
 
       // 检查是否为长短信
@@ -62,11 +71,12 @@ class SMSProcessor {
           partNumber,
           totalParts,
           text,
-          timestamp
+          timestamp,
+          { simIdentity }
         );
       } else {
         // 普通短信，直接处理
-        await this.processSmsContent(sender, text, timestamp);
+        await this.processSmsContent(sender, text, timestamp, { simIdentity });
       }
     } catch (err) {
       logger.error('处理PDU失败:', err);
@@ -76,14 +86,19 @@ class SMSProcessor {
   /**
    * 处理短信内容并转发
    */
-  async processSmsContent(sender, text, timestamp) {
+  async processSmsContent(sender, text, timestamp, options = {}) {
+    const simIdentity = options.simIdentity !== undefined
+      ? this.normalizeSimIdentity(options.simIdentity)
+      : await this.getCurrentSimIdentity();
+
     logger.info('=== 处理短信内容 ===');
     logger.info(`发送者: ${sender}`);
     logger.info(`时间戳: ${timestamp}`);
+    logger.info(`收件SIM: ${simIdentity?.simLabel || '未知SIM'}`);
     logger.info(`内容: ${text}`);
     logger.info('====================');
 
-    const messageRecord = this.addReceivedMessage(sender, text, timestamp);
+    const messageRecord = this.addReceivedMessage(sender, text, timestamp, simIdentity);
 
     // 推送到所有通道
     await this.pushManager.pushToAll(sender, text, timestamp);
@@ -102,13 +117,16 @@ class SMSProcessor {
   /**
    * 记录收到的短信，供Web管理端展示。
    */
-  addReceivedMessage(sender, text, timestamp) {
+  addReceivedMessage(sender, text, timestamp, simIdentity = null) {
+    const normalizedSimIdentity = this.normalizeSimIdentity(simIdentity);
     const message = {
       id: `${Date.now()}-${++this.receivedMessageSeq}`,
       sender,
       text,
       timestamp,
       receivedAt: new Date().toISOString(),
+      simId: normalizedSimIdentity?.simId || '',
+      simLabel: normalizedSimIdentity?.simLabel || '未知SIM',
       status: 'received',
       statusText: '已接收'
     };
@@ -119,7 +137,7 @@ class SMSProcessor {
     }
 
     this.persistReceivedMessages();
-    logger.info(`短信已进入Web收件箱: ${sender}`);
+    logger.info(`短信已进入Web收件箱: ${sender} (${message.simLabel})`);
     return message;
   }
 
@@ -138,8 +156,53 @@ class SMSProcessor {
    * 获取最近收到的短信。
    */
   getReceivedMessages(limit = 50) {
-    const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), this.maxReceivedMessages);
-    return this.receivedMessages.slice(0, safeLimit);
+    return this.receivedMessages.slice(0, this.resolveReceivedMessagesLimit(limit));
+  }
+
+  /**
+   * 获取按SIM作用域过滤后的短信。
+   */
+  listReceivedMessages(limit = 50, options = {}) {
+    const safeLimit = this.resolveReceivedMessagesLimit(limit);
+    const requestedScope = String(options.scope || 'current').trim().toLowerCase();
+    const currentSim = this.normalizeSimIdentity(options.currentSimIdentity);
+    const includeAllSims = requestedScope === 'all' && this.allowAllSimMessages;
+
+    let effectiveScope = includeAllSims ? 'all' : 'current';
+    let messages = this.receivedMessages;
+
+    if (this.partitionMessagesBySim && !includeAllSims) {
+      if (currentSim?.simId) {
+        messages = this.receivedMessages.filter(message => message.simId === currentSim.simId);
+      } else {
+        messages = [];
+        effectiveScope = 'unavailable';
+      }
+    } else if (!this.partitionMessagesBySim) {
+      effectiveScope = 'all';
+    }
+
+    return {
+      messages: messages.slice(0, safeLimit),
+      meta: {
+        limit: safeLimit,
+        total: messages.length,
+        scope: effectiveScope,
+        requestedScope,
+        partitionBySim: this.partitionMessagesBySim,
+        allSimMessagesAllowed: this.allowAllSimMessages,
+        allSimMessagesDenied: this.partitionMessagesBySim && requestedScope === 'all' && !this.allowAllSimMessages,
+        currentSim,
+        currentSimKnown: Boolean(currentSim?.simId)
+      }
+    };
+  }
+
+  /**
+   * 限制收件箱查询条数。
+   */
+  resolveReceivedMessagesLimit(limit = 50) {
+    return Math.min(Math.max(Number(limit) || 50, 1), this.maxReceivedMessages);
   }
 
   /**
@@ -152,6 +215,20 @@ class SMSProcessor {
     }
 
     return Math.min(Math.floor(configured), 5000);
+  }
+
+  /**
+   * 是否按当前SIM隔离Web收件箱。默认开启，避免换卡后读取其他SIM历史。
+   */
+  resolvePartitionMessagesBySim() {
+    return this.config.inbox?.partitionBySim !== false;
+  }
+
+  /**
+   * 是否允许显式查询全部SIM历史。默认关闭。
+   */
+  resolveAllowAllSimMessages() {
+    return this.config.inbox?.allowAllSimMessages === true;
   }
 
   /**
@@ -232,14 +309,150 @@ class SMSProcessor {
       return null;
     }
 
+    const simIdentity = this.normalizeStoredSimIdentity(item);
+
     return {
       id,
       sender: String(item.sender || '未知号码'),
       text: String(item.text || ''),
       timestamp: String(item.timestamp || item.receivedAt || new Date().toISOString()),
       receivedAt: String(item.receivedAt || new Date().toISOString()),
+      simId: simIdentity?.simId || '',
+      simLabel: simIdentity?.simLabel || '未知SIM',
       status: String(item.status || 'received'),
       statusText: String(item.statusText || '已接收')
+    };
+  }
+
+  /**
+   * 从历史记录中恢复SIM身份。旧记录没有SIM字段，会归到未知SIM。
+   */
+  normalizeStoredSimIdentity(item) {
+    if (item.simId || item.simLabel) {
+      return this.normalizeSimIdentity({
+        simId: item.simId,
+        simLabel: item.simLabel
+      });
+    }
+
+    if (item.sim && typeof item.sim === 'object') {
+      return this.normalizeSimIdentity(item.sim);
+    }
+
+    if (item.simIccid || item.iccid) {
+      return this.createSimIdentityFromICCID(item.simIccid || item.iccid);
+    }
+
+    return null;
+  }
+
+  /**
+   * 获取当前SIM身份，用于收到短信时打标和Web收件箱过滤。
+   */
+  async getCurrentSimIdentity(options = {}) {
+    const refresh = options.refresh === true;
+    const now = Date.now();
+
+    if (!refresh && this.currentSimCheckedAt && now - this.currentSimCheckedAt < this.simIdentityTtlMs) {
+      return this.currentSimIdentity;
+    }
+
+    if (this.currentSimLookup) {
+      return this.currentSimLookup;
+    }
+
+    if (!this.modem?.getICCID) {
+      this.currentSimIdentity = null;
+      this.currentSimCheckedAt = now;
+      return null;
+    }
+
+    this.currentSimLookup = (async () => {
+      try {
+        const iccid = await this.modem.getICCID({ refresh: true });
+        return this.setCurrentSimFromICCID(iccid);
+      } catch (err) {
+        logger.warn(`查询当前SIM标识失败: ${err.message}`);
+        this.currentSimIdentity = null;
+        this.currentSimCheckedAt = Date.now();
+        return null;
+      } finally {
+        this.currentSimLookup = null;
+      }
+    })();
+
+    return this.currentSimLookup;
+  }
+
+  /**
+   * 使用ICCID更新当前SIM身份缓存。
+   */
+  setCurrentSimFromICCID(iccid) {
+    return this.setCurrentSimIdentity(this.createSimIdentityFromICCID(iccid));
+  }
+
+  /**
+   * 更新当前SIM身份缓存。
+   */
+  setCurrentSimIdentity(identity) {
+    this.currentSimIdentity = this.normalizeSimIdentity(identity);
+    this.currentSimCheckedAt = Date.now();
+    return this.currentSimIdentity;
+  }
+
+  /**
+   * 根据ICCID生成稳定但不暴露完整卡号的SIM标识。
+   */
+  createSimIdentityFromICCID(iccid) {
+    const normalized = this.normalizeICCID(iccid);
+    if (!normalized) {
+      return null;
+    }
+
+    return {
+      simId: crypto.createHash('sha256').update(`iccid:${normalized}`).digest('hex').slice(0, 24),
+      simLabel: this.formatSimLabel(normalized)
+    };
+  }
+
+  normalizeICCID(iccid) {
+    return String(iccid || '').replace(/\D/g, '');
+  }
+
+  formatSimLabel(iccid) {
+    const value = String(iccid || '');
+    if (!value) {
+      return '未知SIM';
+    }
+
+    return `ICCID ...${value.slice(-6)}`;
+  }
+
+  normalizeSimIdentity(identity) {
+    if (!identity) {
+      return null;
+    }
+
+    if (typeof identity === 'string') {
+      return this.createSimIdentityFromICCID(identity);
+    }
+
+    if (typeof identity !== 'object' || Array.isArray(identity)) {
+      return null;
+    }
+
+    if (identity.iccid || identity.simIccid) {
+      return this.createSimIdentityFromICCID(identity.iccid || identity.simIccid);
+    }
+
+    const simId = String(identity.simId || identity.id || '').trim();
+    if (!simId) {
+      return null;
+    }
+
+    return {
+      simId,
+      simLabel: String(identity.simLabel || identity.label || '未知SIM')
     };
   }
 

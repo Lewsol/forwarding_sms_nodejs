@@ -21,6 +21,8 @@ class ModemManager extends EventEmitter {
       model: '未知',
       version: '未知'
     };
+    this.iccid = null;
+    this.iccidCheckedAt = null;
     this.mobileData = {
       cid: this.mobileDataConfig.cid,
       desiredEnabled: false,
@@ -996,6 +998,7 @@ class ModemManager extends EventEmitter {
 
     // 3. 按ML307A文档先确认SIM卡和协议栈状态
     await this.waitSIMReady();
+    await this.getICCID({ refresh: true });
     await this.ensureFullFunctionality();
 
     // 4. 启动保护：先断开应用层拨号，再等待短信所需的网络注册。
@@ -1308,18 +1311,44 @@ class ModemManager extends EventEmitter {
   /**
    * 查询ICCID
    */
-  async getICCID() {
+  async getICCID(options = {}) {
+    if (!options.refresh && this.iccid) {
+      return this.iccid;
+    }
+
     try {
       const resp = await this.sendATCommand('AT+CCID', 2000);
       const match = resp.match(/\+CCID:\s*(\d+)/);
       if (match) {
-        return match[1];
+        const previousICCID = this.iccid;
+        this.iccid = match[1];
+        this.iccidCheckedAt = new Date().toISOString();
+        if (previousICCID !== this.iccid) {
+          logger.info(`✓ 当前SIM ICCID: ${this.formatICCID(this.iccid)}`);
+        }
+        return this.iccid;
       }
+
+      this.iccid = null;
+      this.iccidCheckedAt = new Date().toISOString();
       return null;
     } catch (err) {
+      if (options.refresh) {
+        this.iccid = null;
+        this.iccidCheckedAt = new Date().toISOString();
+      }
       logger.error('查询ICCID失败:', err);
       return null;
     }
+  }
+
+  formatICCID(iccid) {
+    const value = String(iccid || '');
+    if (!value) {
+      return '未知';
+    }
+
+    return `...${value.slice(-6)}`;
   }
 
   /**

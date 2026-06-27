@@ -13,10 +13,12 @@ class ConcatManager extends EventEmitter {
   /**
    * 查找或创建长短信槽位
    */
-  findOrCreateSlot(refNumber, sender, totalParts) {
+  findOrCreateSlot(refNumber, sender, totalParts, simIdentity = null) {
+    const simId = simIdentity?.simId || '';
+
     // 先查找是否已存在
     let slot = this.buffer.find(s =>
-      s.inUse && s.refNumber === refNumber && s.sender === sender
+      s.inUse && s.refNumber === refNumber && s.sender === sender && s.simId === simId
     );
 
     if (slot) {
@@ -26,7 +28,7 @@ class ConcatManager extends EventEmitter {
     // 查找空闲槽位
     slot = this.buffer.find(s => !s.inUse);
     if (slot) {
-      this.initSlot(slot, refNumber, sender, totalParts);
+      this.initSlot(slot, refNumber, sender, totalParts, simIdentity);
       return slot;
     }
 
@@ -44,17 +46,19 @@ class ConcatManager extends EventEmitter {
       logger.warn('长短信缓存已满，覆盖最老的槽位');
     }
 
-    this.initSlot(slot, refNumber, sender, totalParts);
+    this.initSlot(slot, refNumber, sender, totalParts, simIdentity);
     return slot;
   }
 
   /**
    * 初始化槽位
    */
-  initSlot(slot, refNumber, sender, totalParts) {
+  initSlot(slot, refNumber, sender, totalParts, simIdentity = null) {
     slot.inUse = true;
     slot.refNumber = refNumber;
     slot.sender = sender;
+    slot.simId = simIdentity?.simId || '';
+    slot.simIdentity = simIdentity;
     slot.totalParts = totalParts;
     slot.receivedParts = 0;
     slot.firstPartTime = Date.now();
@@ -65,10 +69,10 @@ class ConcatManager extends EventEmitter {
   /**
    * 添加短信分段
    */
-  addPart(refNumber, sender, partNumber, totalParts, text, timestamp) {
+  addPart(refNumber, sender, partNumber, totalParts, text, timestamp, options = {}) {
     logger.info(`收到长短信分段 ${partNumber}/${totalParts}, 参考号: ${refNumber}`);
 
-    const slot = this.findOrCreateSlot(refNumber, sender, totalParts);
+    const slot = this.findOrCreateSlot(refNumber, sender, totalParts, options.simIdentity);
     const partIndex = partNumber - 1; // partNumber从1开始，数组从0开始
 
     if (partIndex >= 0 && partIndex < this.maxParts) {
@@ -110,7 +114,8 @@ class ConcatManager extends EventEmitter {
     this.emit('complete', {
       sender: slot.sender,
       text: fullText,
-      timestamp: slot.timestamp
+      timestamp: slot.timestamp,
+      simIdentity: slot.simIdentity
     });
 
     // 清空槽位
@@ -124,6 +129,8 @@ class ConcatManager extends EventEmitter {
     slot.inUse = false;
     slot.parts = [];
     slot.receivedParts = 0;
+    slot.simId = '';
+    slot.simIdentity = null;
   }
 
   /**

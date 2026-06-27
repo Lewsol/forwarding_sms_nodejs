@@ -60,7 +60,9 @@ async function main() {
   // 监听长短信合并完成事件
   concatManager.on('complete', async (sms) => {
     logger.info('收到长短信合并完成事件');
-    await smsProcessor.processSmsContent(sms.sender, sms.text, sms.timestamp);
+    await smsProcessor.processSmsContent(sms.sender, sms.text, sms.timestamp, {
+      simIdentity: sms.simIdentity
+    });
   });
 
   // 监听模组短信事件

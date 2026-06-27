@@ -51,6 +51,7 @@ const elements = {
   smsStatus: document.querySelector('#smsStatus'),
   messagesButton: document.querySelector('#messagesButton'),
   messageCount: document.querySelector('#messageCount'),
+  messageScope: document.querySelector('#messageScope'),
   messageList: document.querySelector('#messageList'),
   atForm: document.querySelector('#atForm'),
   atOutput: document.querySelector('#atOutput'),
@@ -311,9 +312,16 @@ function formatDateTime(value) {
   });
 }
 
-function renderMessages(messages) {
+function renderMessages(messages, meta = {}) {
   elements.messageList.replaceChildren();
-  setText(elements.messageCount, `最近 ${messages.length} 条`);
+  const currentSimLabel = meta.currentSim?.simLabel || '当前SIM未知';
+  const countLabel = meta.partitionBySim ? `${currentSimLabel} 最近 ${messages.length} 条` : `全部SIM 最近 ${messages.length} 条`;
+  const scopeLabel = meta.partitionBySim
+    ? (meta.currentSimKnown ? '仅显示当前SIM收到的短信' : '未识别当前SIM，收件箱已隐藏')
+    : 'SIM隔离未启用';
+
+  setText(elements.messageCount, countLabel);
+  setText(elements.messageScope, scopeLabel);
 
   if (!messages.length) {
     const empty = document.createElement('p');
@@ -345,8 +353,16 @@ function renderMessages(messages) {
     text.className = 'message-text';
     text.textContent = message.text || '';
 
+    const metaRow = document.createElement('div');
+    metaRow.className = 'message-meta';
+
+    const sim = document.createElement('span');
+    sim.className = 'message-sim';
+    sim.textContent = message.simLabel || '未知SIM';
+
+    metaRow.append(sim);
     header.append(sender, status, time);
-    item.append(header, text);
+    item.append(header, metaRow, text);
     fragment.append(item);
   });
 
@@ -664,7 +680,7 @@ async function refreshLogs() {
 
 async function refreshMessages() {
   const messages = await requestJSON('/api/sms/received?limit=50');
-  renderMessages(messages.data || []);
+  renderMessages(messages.data || [], messages.meta || {});
 }
 
 async function toggleMobileData() {

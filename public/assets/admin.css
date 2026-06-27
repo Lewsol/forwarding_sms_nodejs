@@ -759,6 +759,26 @@ h3 {
   letter-spacing: -0.2px;
 }
 
+.message-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.message-sim {
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-pill);
+  background: var(--surface-soft);
+  color: var(--muted);
+  padding: 3px 9px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .message-item__header time {
   color: var(--muted);
   font-family: var(--font-sans);
