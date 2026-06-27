@@ -4,19 +4,40 @@
     "baudRate": 115200,
     "autoDetect": true,
     "probeTimeout": 1200,
-    "_comment": "Windows使用COM1/COM2/COM3等，也可以直接写数字如3; Linux使用/dev/ttyUSB0"
+    "_comment": "必填。path是手动串口或自动探测优先项；autoDetect=false时必须写真实串口。Windows使用COM1/COM2/COM3等，也可以直接写数字如3；Linux使用/dev/ttyUSB0。baudRate通常为115200，probeTimeout为AT探测超时毫秒。"
   },
   "mobileData": {
     "cid": 1,
-    "_comment": "每次启动都会强制关闭移动数据，管理台开关只影响当前运行期; ML307 cid8为IMS专用，请勿使用"
+    "_comment": "可选，默认cid=1。有效范围1-15，cid8为IMS专用，请勿使用。ML307每次启动都会强制断开MIPCALL应用层拨号，并保护性尝试CGACT；管理台开关只影响当前运行期。"
   },
+  "_simCards_comment": "可选。用于给SIM1/SIM2显示手机号；slot=0是SIM1，slot=1是SIM2。也兼容旧字段名simSlots、sims、sim。",
+  "simCards": [
+    {
+      "slot": 0,
+      "phoneNumber": "+8613800138000"
+    },
+    {
+      "slot": 1,
+      "phoneNumber": "+447700900000"
+    }
+  ],
   "smtp": {
+    "_comment": "可选。填写server后会启用邮件通知；启用时server、port、user、pass、sendTo都需要正确填写。不需要邮件可删除smtp或清空server。",
     "server": "smtp.qq.com",
     "port": 465,
     "user": "your@qq.com",
     "pass": "your_auth_code",
     "sendTo": "recipient@example.com"
   },
+  "inbox": {
+    "maxReceivedMessages": 200,
+    "receivedMessagesFile": "data/received-messages.json",
+    "partitionBySim": true,
+    "allowAllSimMessages": false,
+    "dualSimDefaultScope": "all",
+    "_comment": "全部可选。maxReceivedMessages默认200且最大5000；receivedMessagesFile默认data/received-messages.json；partitionBySim默认true；allowAllSimMessages默认false；dualSimDefaultScope可为all或current。默认显示全部短信；直出URC未携带卡槽时，新短信不区分SIM1/SIM2收件归属。"
+  },
+  "_pushChannels_comment": "可选。enabled=false时目标字段可以为空；enabled=true时按type要求填写目标：post_json/bark/get/dingtalk/custom/feishu需要url，telegram需要url(bot token)+key1(chat id)，pushplus需要key1(token)，serverchan需要key1(sendkey)。customBody如果填写必须是合法JSON字符串。",
   "pushChannels": [
     {
       "enabled": true,
@@ -72,9 +93,6 @@
   "api": {
     "port": 3000,
     "webToken": "change-this-token",
-    "auth": {
-      "username": "admin",
-      "password": "admin123"
-    }
+    "_comment": "必填。port是API和管理台监听端口；webToken是唯一鉴权凭据，可通过Authorization: Bearer、X-Web-Token、token查询参数或管理台登录页提交。"
   }
 }
