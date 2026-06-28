@@ -328,6 +328,36 @@ Docker 场景下确认 `docker-compose.yml` 已挂载 `/dev`，并保留了 `dev
 - 临时关闭自动探测，把 `serial.autoDetect` 设为 `false`，并把 `serial.path` 写成真实 AT 串口。
 - 查看日志中每个候选串口的探测结果。
 
+### ML307A 首次上电被识别成网卡
+
+ML307A 首次上电或恢复默认 USB 模式时，系统可能先把它识别为 RNDIS 网卡，而不是 USB 串口。此时 `lsusb` 能看到设备，但 `/dev/ttyUSB*` 里找不到可用 AT 串口。
+
+可以用下面命令确认 USB 设备和内核识别结果：
+
+```bash
+lsusb
+dmesg | grep -E 'ML307A|2ecc|3012|rndis|ttyUSB'
+```
+
+典型日志会包含类似内容：
+
+```text
+usb 1-3: New USB device found, idVendor=2ecc, idProduct=3012
+usb 1-3: Product: ML307A
+usb 1-3: Manufacturer: CMIOT
+rndis_host 1-3:1.0: rndis media connect
+rndis_host 1-3:1.0 enxac0c29a39b6d: renamed from eth0
+```
+
+如果出现上述 RNDIS 网卡日志，并且系统没有生成 USB 串口，可以把该 USB ID 添加到 `option` 串口驱动：
+
+```bash
+sudo modprobe option
+echo 2ecc 3012 | sudo tee /sys/bus/usb-serial/drivers/option1/new_id
+```
+
+执行后重新查看 `/dev/ttyUSB*`，再把 `config.json` 里的 `serial.path` 指向实际 AT 串口。不同内核、发行版或模组固件的枚举行为可能不完全一致；如果后续仍会被识别为网卡，可按系统发行版方式配置 udev/modprobe 规则。
+
 ### 收不到短信
 
 - 确认 SIM 卡已插好且可以注册网络。
